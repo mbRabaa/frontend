@@ -1,8 +1,7 @@
+# Étape 1 : Construire l'application
+FROM node:18-alpine AS build
 
-# Utiliser une image Node officielle comme base
-FROM node:18-alpine
-
-# Définir le répertoire de travail dans le conteneur
+# Définir le répertoire de travail
 WORKDIR /app
 
 # Copier les fichiers package.json et package-lock.json
@@ -17,8 +16,14 @@ COPY . .
 # Construire l'application pour la production
 RUN npm run build
 
-# Exposer le port sur lequel l'application va tourner
-EXPOSE 3000
+# Étape 2 : Créer l'image finale avec Nginx
+FROM nginx:alpine
 
-# Commande pour démarrer l'application
-CMD ["npm", "run", "dev"]
+# Copier les fichiers construits depuis l'étape précédente
+COPY --from=build /app/build /usr/share/nginx/html
+
+# Exposer le port 80 (par défaut utilisé par Nginx)
+EXPOSE 80
+
+# Lancer Nginx pour servir l'application
+CMD ["nginx", "-g", "daemon off;"]
