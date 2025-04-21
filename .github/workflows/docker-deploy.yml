@@ -30,7 +30,7 @@ jobs:
           CI: true  # Force le mode CI pour les tests
 
       - name: 📦 Préparer les artefacts
-        uses: actions/upload-artifact@v2.3.0
+        uses: actions/upload-artifact@v4
         with:
           name: react-build
           path: ./build/  # Vérifier si c'est bien le bon chemin de sortie du build
