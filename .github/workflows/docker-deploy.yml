@@ -1,4 +1,4 @@
-name: CI/CD - Docker Build & Deploy
+name: CI/CD - test + Docker Build & Deploy
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: react-build
-          path: build/
+          path: ./build/  # Vérifier si c'est bien le bon chemin de sortie du build
 
   build-and-push:
     needs: build-app
@@ -46,7 +46,7 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: react-build
-          path: build/
+          path: ./build/
 
       - name: 🔑 Connexion à Docker Hub 
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
