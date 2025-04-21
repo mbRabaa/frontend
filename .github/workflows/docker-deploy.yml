@@ -1,4 +1,4 @@
-name: CI/CD - build +test unitaire + Docker Build & Deploy
+name: pipeline :build +test unitaire + Docker Build & Deploy
 
 on:
   push:
