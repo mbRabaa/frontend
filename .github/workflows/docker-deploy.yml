@@ -22,15 +22,17 @@ jobs:
         run: npm ci
 
       - name: 🛠️ Builder l'application
-        run: npm run build
+        run: |
+          npm run build
+          ls -R build/  # Vérification du contenu
 
       - name: 🧪 Exécuter les tests
         run: npm test
         env:
           CI: true
 
-      - name: 📦 Sauvegarder le build (Version robuste)
-        uses: actions/upload-artifact@v4  # Version la plus stable pour self-hosted
+      - name: 📦 Sauvegarder le build
+        uses: actions/upload-artifact@v4
         with:
           name: react-build
           path: build/
@@ -45,7 +47,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: 📥 Récupérer le build
-        uses: actions/download-artifact@v4 # Version matching
+        uses: actions/download-artifact@v4
         with:
           name: react-build
           path: build/
