@@ -1,4 +1,4 @@
-name: Pipeline CI/CD build app; test unitaire; deploy docker 
+name: Pipeline CI/CD build app; test unitaire; deploy docker
 
 on:
   push:
@@ -12,29 +12,7 @@ env:
   CACHE_TAG: buildcache
 
 jobs:
-  unit-tests:
-    runs-on: self-hosted
-    steps:
-      - name: 🛎️ Checkout du code
-        uses: actions/checkout@v3
-
-      - name: ⎔ Configurer Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
-          cache: 'npm'
-
-      - name: 📦 Installer les dépendances
-        run: npm ci --prefer-offline
-
-      - name: 🧪 Exécuter les tests unitaires
-        run: npm test
-        env:
-          CI: true
-          NODE_ENV: test
-
   build-app:
-    needs: unit-tests
     runs-on: self-hosted
     steps:
       - name: 🛎️ Checkout du code
@@ -63,8 +41,30 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  build-and-push:
+  unit-tests:
     needs: build-app
+    runs-on: self-hosted
+    steps:
+      - name: 🛎️ Checkout du code
+        uses: actions/checkout@v3
+
+      - name: ⎔ Configurer Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: 📦 Installer les dépendances
+        run: npm ci --prefer-offline
+
+      - name: 🧪 Exécuter les tests unitaires
+        run: npm test
+        env:
+          CI: true
+          NODE_ENV: test
+
+  build-and-push:
+    needs: unit-tests
     runs-on: self-hosted
     steps:
       - name: 🛠️ Configurer Buildx
@@ -141,3 +141,19 @@ jobs:
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement réussi !"
+
+      - name: 🔍 Vérifier le conteneur dans le runner
+        run: |
+          echo "=== Conteneurs existants ==="
+          docker ps -a
+          
+          echo "=== Statut du conteneur ==="
+          docker inspect -f '{{.State.Status}}' ${{ env.CONTAINER_NAME }} || echo "Conteneur non trouvé"
+          
+          if docker ps -a --format '{{.Names}}' | grep -q ${{ env.CONTAINER_NAME }}; then
+            echo "=== Logs du conteneur ==="
+            docker logs ${{ env.CONTAINER_NAME }}
+          fi
+          
+          echo "=== Test de connexion ==="
+          curl -v http://localhost:${{ env.PORT }}/ || echo "Échec de connexion"
