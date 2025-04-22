@@ -112,7 +112,7 @@ jobs:
 
   deploy:
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: 🔑 Connexion Docker
         uses: docker/login-action@v2
