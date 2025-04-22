@@ -1,4 +1,4 @@
-name: Pipeline CI/CD Avancée
+name: Pipeline CI/CD build app; test unitaire; deploy docker 
 
 on:
   push:
