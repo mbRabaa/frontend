@@ -24,7 +24,7 @@ jobs:
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          ls -R build/  # Vérification du contenu
+          ls -R dist/  # Vérification du contenu du dossier dist
 
       - name: 🧪 Exécuter les tests
         run: npm test
@@ -35,7 +35,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: react-build
-          path: build/
+          path: dist/  # Changé de build/ à dist/
           retention-days: 1
           if-no-files-found: error
 
@@ -50,7 +50,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: react-build
-          path: build/
+          path: dist/  # Changé de build/ à dist/
 
       - name: 🔑 Connexion à Docker Hub
         uses: docker/login-action@v2
