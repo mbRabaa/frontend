@@ -1,0 +1,15 @@
+# Hérite des exclusions de .gitignore
+**/.git
+**/.github
+**/.vscode
+**/.idea
+
+# Fichiers spécifiques à Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Cache et logs
+**/npm-cache
+**/.npm
+**/yarn-cache
