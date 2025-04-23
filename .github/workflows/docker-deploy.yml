@@ -17,7 +17,7 @@ env:
   SONARQUBE_PORT: 9000
   SONAR_PROJECT_KEY: frontend-app
   SONAR_PROJECT_NAME: "Frontend Application"
-  SONARQUBE_VERSION: 9.9.1-community
+  SONARQUBE_VERSION: 9.9.4-community  # Version mise à jour
 
 jobs:
   build-app:
@@ -80,7 +80,7 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 20  # Timeout augmenté
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
@@ -90,6 +90,10 @@ jobs:
           # Arrêter et supprimer le conteneur existant
           docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+          
+          # Supprimer les volumes existants
+          docker volume rm -f sonarqube_data || true
+          docker volume rm -f sonarqube_extensions || true
           
           # Libérer le port si nécessaire
           echo "Vérification du port ${{ env.SONARQUBE_PORT }}..."
@@ -102,6 +106,7 @@ jobs:
           # Créer les volumes persistants
           docker volume create sonarqube_data || true
           docker volume create sonarqube_extensions || true
+          docker volume create sonarqube_logs || true
           
           echo "🚀 Démarrage de SonarQube..."
           docker run -d \
@@ -109,21 +114,18 @@ jobs:
             -p ${{ env.SONARQUBE_PORT }}:9000 \
             -v sonarqube_data:/opt/sonarqube/data \
             -v sonarqube_extensions:/opt/sonarqube/extensions \
+            -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
 
-          echo "📝 Logs initiaux du conteneur :"
-          docker logs ${{ env.SONARQUBE_CONTAINER_NAME }} --tail 20
-
-          echo "⏳ Attente du démarrage (max 5 minutes)..."
-          for i in {1..30}; do
+          echo "⏳ Attente du démarrage (max 10 minutes)..."
+          for i in {1..60}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
               echo "✅ SonarQube est prêt!"
               break
             fi
             sleep 10
-            echo "⌛ Tentative $i/30 - Statut: $(curl -sS http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status || echo 'indisponible')"
-            docker logs ${{ env.SONARQUBE_CONTAINER_NAME }} --tail 5
+            echo "⌛ Tentative $i/60 - Statut: $(curl -sS http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status || echo 'indisponible')"
           done
 
           # Vérification finale
@@ -165,7 +167,7 @@ jobs:
             -Dsonar.exclusions=**/node_modules/**,**/*.test.js
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.qualitygate.wait=true
-            -Dsonar.qualitygate.timeout=300
+            -Dsonar.qualitygate.timeout=600
 
       - name: ℹ️ Afficher les résultats
         run: |
