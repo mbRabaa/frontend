@@ -120,10 +120,21 @@ jobs:
             echo "⌛ Tentative $i/60..."
           done
 
+      - name: 🔑 Configurer l'authentification
+        run: |
+          # Attendre que l'API soit complètement disponible
+          sleep 30
+          
+          # Vérifier que le token est bien défini
+          if [ -z "${{ secrets.SONARQUBE_TOKEN }}" ]; then
+            echo "::error::Le token SonarQube n'est pas configuré"
+            exit 1
+          fi
+
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
         env:
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}  # Utilisation directe du secret
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
           SONAR_HOST_URL: http://localhost:${{ env.SONARQUBE_PORT }}
         with:
           args: >
@@ -135,16 +146,14 @@ jobs:
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
-            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}  # Ajout explicite du token
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.password=  # Vide car on utilise un token
 
       - name: ℹ️ Afficher les résultats
         run: |
           echo "=========================================="
           echo "🔍 Analyse SonarQube terminée avec succès!"
           echo "🌐 Accédez aux résultats sur: http://localhost:${{ env.SONARQUBE_PORT }}"
-          echo "🔑 Identifiants:"
-          echo "Utilisateur: admin"
-          echo "Mot de passe: ${{ secrets.SONAR_ADMIN_PASSWORD }}"
           echo "=========================================="
 
   build-and-push:
