@@ -80,35 +80,27 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 20  # Timeout augmenté
+    timeout-minutes: 20
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 🧹 Nettoyer l'environnement
         run: |
-          # Arrêter et supprimer le conteneur existant
           docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
-          
-          # Supprimer les volumes existants
-          docker volume rm -f sonarqube_data || true
-          docker volume rm -f sonarqube_extensions || true
-          
-          # Libérer le port si nécessaire
-          echo "Vérification du port ${{ env.SONARQUBE_PORT }}..."
-          sudo ss -tulnp | grep ":${{ env.SONARQUBE_PORT }}" || echo "Port disponible"
-          sudo fuser -k ${{ env.SONARQUBE_PORT }}/tcp || echo "Aucun processus à terminer"
+          docker volume rm -f sonarqube_data sonarqube_extensions sonarqube_logs || true
+          sudo fuser -k ${{ env.SONARQUBE_PORT }}/tcp || true
           sleep 5
 
-      - name: 🐳 Démarrer SonarQube avec vérification
+      - name: 🐳 Démarrer SonarQube
         run: |
-          # Créer les volumes persistants
           docker volume create sonarqube_data || true
           docker volume create sonarqube_extensions || true
           docker volume create sonarqube_logs || true
           
-          echo "🚀 Démarrage de SonarQube..."
           docker run -d \
             --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
             -p ${{ env.SONARQUBE_PORT }}:9000 \
@@ -118,45 +110,20 @@ jobs:
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
 
-          echo "⏳ Attente du démarrage (max 10 minutes)..."
+          # Attendre que SonarQube soit opérationnel
           for i in {1..60}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
               echo "✅ SonarQube est prêt!"
               break
             fi
             sleep 10
-            echo "⌛ Tentative $i/60 - Statut: $(curl -sS http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status || echo 'indisponible')"
+            echo "⌛ Tentative $i/60..."
           done
-
-          # Vérification finale
-          if ! curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
-            echo "::error::Échec du démarrage de SonarQube"
-            docker logs ${{ env.SONARQUBE_CONTAINER_NAME }}
-            exit 1
-          fi
-
-      - name: 🔑 Configurer SonarQube
-        run: |
-          echo "🔐 Changement du mot de passe admin..."
-          curl -v -u admin:admin -X POST "http://localhost:${{ env.SONARQUBE_PORT }}/api/users/change_password" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "login=admin" \
-            --data-urlencode "previousPassword=admin" \
-            --data-urlencode "password=${{ secrets.SONAR_ADMIN_PASSWORD }}"
-
-          echo "🔑 Génération du token..."
-          SONAR_TOKEN=$(curl -u admin:${{ secrets.SONAR_ADMIN_PASSWORD }} \
-            -X POST "http://localhost:${{ env.SONARQUBE_PORT }}/api/user_tokens/generate" \
-            -d "name=github-action-$(date +%s)" \
-            | jq -r '.token')
-          
-          echo "SONAR_TOKEN=$SONAR_TOKEN" >> $GITHUB_ENV
-          echo "::add-mask::$SONAR_TOKEN"
 
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
         env:
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}  # Utilisation directe du secret
           SONAR_HOST_URL: http://localhost:${{ env.SONARQUBE_PORT }}
         with:
           args: >
@@ -168,6 +135,7 @@ jobs:
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}  # Ajout explicite du token
 
       - name: ℹ️ Afficher les résultats
         run: |
