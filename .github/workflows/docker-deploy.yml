@@ -1,4 +1,4 @@
-name: Pipeline CI/CD build app; test unitaire; deploy docker
+name: Pipeline CI/CD build app; test unitaire; analyse SonarQube; deploy docker
 
 on:
   push:
@@ -10,6 +10,7 @@ env:
   CONTAINER_NAME: frontend-prod
   PORT: 80
   CACHE_TAG: buildcache
+  SONAR_HOST_URL: https://sonarcloud.io
 
 jobs:
   build-app:
@@ -17,6 +18,8 @@ jobs:
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Nécessaire pour SonarQube
 
       - name: ⎔ Configurer Node.js
         uses: actions/setup-node@v3
@@ -30,6 +33,7 @@ jobs:
       - name: 🛠️ Builder l'application
         run: |
           npm run build
+          npm run test:coverage  # Génère le rapport lcov pour SonarQube
           echo "👉 Contenu du dossier dist/:"
           ls -lh dist/
 
@@ -63,8 +67,50 @@ jobs:
           CI: true
           NODE_ENV: test
 
-  build-and-push:
+  sonarqube-analysis:
     needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 🛎️ Checkout du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ⎔ Configurer Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: 📦 Installer les dépendances
+        run: npm ci --prefer-offline
+
+      - name: 🔍 Exécuter analyse SonarQube Cloud
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=frontend-app
+            -Dsonar.organization=mbrabaa
+            -Dsonar.sources=src
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.exclusions=**/node_modules/**
+            -Dsonar.projectName=Frontend-App
+            -Dsonar.host.url=${{ env.SONAR_HOST_URL }}
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.links.homepage=https://github.com/${{ github.repository }}
+            -Dsonar.links.ci=https://github.com/${{ github.repository }}/actions
+            -Dsonar.links.scm=https://github.com/${{ github.repository }}
+            -Dsonar.links.issue=https://github.com/${{ github.repository }}/issues
+
+      - name: 🏷️ Vérifier la qualité du code
+        run: |
+          echo "Analyse SonarQube complète. Consultez les résultats sur ${{ env.SONAR_HOST_URL }}"
+
+  build-and-push:
+    needs: sonarqube-analysis
     runs-on: self-hosted
     steps:
       - name: 🛠️ Configurer Buildx
