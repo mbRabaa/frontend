@@ -62,12 +62,21 @@ jobs:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v3
 
-      - name: 🧪 Exécuter les tests unitaires
-        run: |
-          npm test -- --coverage
-          echo "Rapport de couverture généré :"
-          cat coverage/lcov.info
+      - name: ⎔ Configurer Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
 
+      - name: 📦 Installer les dépendances
+        run: npm ci --prefer-offline
+
+      - name: 🧪 Exécuter les tests unitaires
+        run: npm test
+        env:
+          CI: true
+          NODE_ENV: test
+          
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
