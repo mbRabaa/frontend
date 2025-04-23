@@ -1,4 +1,4 @@
-name: Pipeline CI/CD complète avec SonarQube persistant
+name: Pipeline CI/CD Complète avec SonarQube
 
 on:
   push:
@@ -13,9 +13,9 @@ env:
   CACHE_TAG: buildcache
   
   # Configuration SonarQube
-  SONARQUBE_CONTAINER_NAME: sonarqube-persistent
+  SONARQUBE_CONTAINER_NAME: sonarqube-ci
   SONARQUBE_PORT: 9000
-  SONARQUBE_ADMIN_USER: admin
+  SONARQUBE_NETWORK: sonarnet
   SONAR_PROJECT_KEY: mbRabaa_frontend
 
 jobs:
@@ -79,7 +79,7 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 60  # Analyse peut prendre du temps
+    timeout-minutes: 60
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
@@ -94,65 +94,64 @@ jobs:
       - name: 📦 Installer les dépendances
         run: npm ci --prefer-offline
 
-      - name: 🐳 Vérifier et démarrer SonarQube
+      - name: 🐳 Configurer l'environnement Docker
         run: |
-          # Vérifier si le conteneur existe déjà
-          if ! docker ps -a --format '{{.Names}}' | grep -q ${{ env.SONARQUBE_CONTAINER_NAME }}; then
-            echo "🚀 Démarrage nouveau conteneur SonarQube avec persistance..."
-            docker volume create sonarqube_data || true
-            docker volume create sonarqube_extensions || true
-            docker volume create sonarqube_logs || true
-            
-            docker run -d --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
-              -p ${{ env.SONARQUBE_PORT }}:9000 \
-              -v sonarqube_data:/opt/sonarqube/data \
-              -v sonarqube_extensions:/opt/sonarqube/extensions \
-              -v sonarqube_logs:/opt/sonarqube/logs \
-              -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
-              sonarqube:lts-community
-            
-            echo "⏳ Attente initialisation SonarQube (3-5 minutes)..."
-            timeout 600 bash -c 'until curl -sSf "http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status" | grep -q '"'"'"status":"UP"'"'"'; do sleep 10; done'
-            
-            # Configuration initiale
-            echo "🔧 Configuration initiale..."
+          # Créer le réseau si inexistant
+          docker network create ${{ env.SONARQUBE_NETWORK }} || true
+          
+          # Nettoyer les instances précédentes
+          docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+          docker rm ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+
+      - name: 🚀 Démarrer SonarQube
+        run: |
+          docker run -d --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
+            --network ${{ env.SONARQUBE_NETWORK }} \
+            -p ${{ env.SONARQUBE_PORT }}:9000 \
+            -v sonarqube_data:/opt/sonarqube/data \
+            -v sonarqube_extensions:/opt/sonarqube/extensions \
+            -v sonarqube_logs:/opt/sonarqube/logs \
+            -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+            sonarqube:lts-community
+
+          echo "⏳ Attente de l'initialisation de SonarQube..."
+          timeout 300 bash -c 'until curl -sSf "http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status" | grep -q '"'"'"status":"UP"'"'"'; do sleep 10; done' || (docker logs ${{ env.SONARQUBE_CONTAINER_NAME }} && exit 1)
+
+          # Configuration initiale
+          if curl -s "http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status" | grep -q '"status":"UP"'; then
+            echo "🔧 Configuration du mot de passe admin..."
             curl -u admin:admin -X POST "http://localhost:${{ env.SONARQUBE_PORT }}/api/users/change_password" \
               -H "Content-Type: application/x-www-form-urlencoded" \
               --data-urlencode "login=admin" \
               --data-urlencode "previousPassword=admin" \
               --data-urlencode "password=${{ secrets.SONARQUBE_ADMIN_PASSWORD }}"
-          else
-            echo "♻️ Conteneur SonarQube existant détecté, redémarrage..."
-            docker start ${{ env.SONARQUBE_CONTAINER_NAME }}
-            sleep 30
           fi
 
-          echo "✅ SonarQube prêt sur http://localhost:${{ env.SONARQUBE_PORT }}"
-
-      - name: 📊 Exécuter l'analyse SonarQube
+      - name: 🔍 Exécuter l'analyse SonarQube
         run: |
           docker run --rm \
-            -e SONAR_HOST_URL="http://${{ env.SONARQUBE_CONTAINER_NAME }}:${{ env.SONARQUBE_PORT }}" \
+            --network ${{ env.SONARQUBE_NETWORK }} \
             -v "$(pwd):/usr/src" \
             -w /usr/src \
             sonarsource/sonar-scanner-cli \
             -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }} \
             -Dsonar.projectName=frontend \
             -Dsonar.sources=src \
-            -Dsonar.host.url=http://localhost:${{ env.SONARQUBE_PORT }} \
-            -Dsonar.login=${{ env.SONARQUBE_ADMIN_USER }} \
+            -Dsonar.host.url=http://${{ env.SONARQUBE_CONTAINER_NAME }}:9000 \
+            -Dsonar.login=admin \
             -Dsonar.password=${{ secrets.SONARQUBE_ADMIN_PASSWORD }} \
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
             -Dsonar.exclusions=**/node_modules/**,**/*.test.js,**/__tests__/** \
             -Dsonar.sourceEncoding=UTF-8 \
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=300
 
-      - name: ℹ️ Informations d'accès
+      - name: 📌 Résultats d'analyse
         run: |
           echo "=============================================="
-          echo "🔍 Analyse SonarQube terminée avec succès!"
+          echo "✅ Analyse SonarQube terminée avec succès!"
           echo ""
-          echo "📊 Résultats disponibles sur:"
+          echo "🔍 Accédez aux résultats sur:"
           echo "http://localhost:${{ env.SONARQUBE_PORT }}/dashboard?id=${{ env.SONAR_PROJECT_KEY }}"
           echo ""
           echo "🔑 Identifiants:"
