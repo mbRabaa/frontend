@@ -28,14 +28,18 @@ jobs:
           cache: 'npm'
 
       - name: 📦 Installer les dépendances
-        run: npm ci --prefer-offline
+        run: |
+          npm ci --prefer-offline
+          npm install -D @vitest/coverage-v8  # Installation du package manquant
 
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm run test:coverage  # Ajouté pour générer le rapport de couverture
+          npm run test:coverage  # Génération du rapport de couverture
           echo "👉 Contenu du dossier dist/:"
           ls -lh dist/
+          echo "👉 Contenu du dossier coverage/:"
+          ls -lh coverage/
 
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
