@@ -1,4 +1,4 @@
-name: Pipeline CI/CD build app; test unitaire; Analyse SonarQube; deploy docker...
+name: Pipeline CI/CD complète avec SonarQube persistant
 
 on:
   push:
@@ -6,11 +6,17 @@ on:
       - main
 
 env:
+  # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
   CONTAINER_NAME: frontend-prod
   PORT: 80
   CACHE_TAG: buildcache
-  SONAR_HOST_URL: https://sonarcloud.io
+  
+  # Configuration SonarQube
+  SONARQUBE_CONTAINER_NAME: sonarqube-persistent
+  SONARQUBE_PORT: 9000
+  SONARQUBE_ADMIN_USER: admin
+  SONAR_PROJECT_KEY: mbRabaa_frontend
 
 jobs:
   build-app:
@@ -30,15 +36,15 @@ jobs:
       - name: 📦 Installer les dépendances
         run: |
           npm ci --prefer-offline
-          npm install -D @vitest/coverage-v8  # Installation du package manquant
+          npm install -D @vitest/coverage-v8
 
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm run test:coverage  # Génération du rapport de couverture
-          echo "👉 Contenu du dossier dist/:"
+          npm run test:coverage
+          echo "👉 Build généré dans dist/:"
           ls -lh dist/
-          echo "👉 Contenu du dossier coverage/:"
+          echo "👉 Rapport de couverture dans coverage/:"
           ls -lh coverage/
 
       - name: 📦 Sauvegarder le build
@@ -47,7 +53,6 @@ jobs:
           name: react-build
           path: dist/
           retention-days: 1
-          if-no-files-found: error
 
   unit-tests:
     needs: build-app
@@ -73,8 +78,8 @@ jobs:
 
   sonarqube-analysis:
     needs: unit-tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: self-hosted
+    timeout-minutes: 60  # Analyse peut prendre du temps
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
@@ -89,29 +94,71 @@ jobs:
       - name: 📦 Installer les dépendances
         run: npm ci --prefer-offline
 
-      - name: 🔍 Exécuter analyse SonarQube Cloud
-        uses: SonarSource/sonarqube-scan-action@v4
-        env:
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=mbRabaa_frontend
-            -Dsonar.organization=mbrabaa
-            -Dsonar.sources=src
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            -Dsonar.exclusions=**/node_modules/**
-            -Dsonar.projectName=frontend
-            -Dsonar.host.url=${{ env.SONAR_HOST_URL }}
-            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
-            -Dsonar.links.homepage=https://github.com/${{ github.repository }}
-            -Dsonar.links.ci=https://github.com/${{ github.repository }}/actions
-            -Dsonar.links.scm=https://github.com/${{ github.repository }}
-            -Dsonar.links.issue=https://github.com/${{ github.repository }}/issues
-
-      - name: 🏷️ Vérifier la qualité du code
+      - name: 🐳 Vérifier et démarrer SonarQube
         run: |
-          echo "Analyse SonarQube complète. Consultez les résultats sur ${{ env.SONAR_HOST_URL }}"
+          # Vérifier si le conteneur existe déjà
+          if ! docker ps -a --format '{{.Names}}' | grep -q ${{ env.SONARQUBE_CONTAINER_NAME }}; then
+            echo "🚀 Démarrage nouveau conteneur SonarQube avec persistance..."
+            docker volume create sonarqube_data || true
+            docker volume create sonarqube_extensions || true
+            docker volume create sonarqube_logs || true
+            
+            docker run -d --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
+              -p ${{ env.SONARQUBE_PORT }}:9000 \
+              -v sonarqube_data:/opt/sonarqube/data \
+              -v sonarqube_extensions:/opt/sonarqube/extensions \
+              -v sonarqube_logs:/opt/sonarqube/logs \
+              -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+              sonarqube:lts-community
+            
+            echo "⏳ Attente initialisation SonarQube (3-5 minutes)..."
+            timeout 600 bash -c 'until curl -sSf "http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status" | grep -q '"'"'"status":"UP"'"'"'; do sleep 10; done'
+            
+            # Configuration initiale
+            echo "🔧 Configuration initiale..."
+            curl -u admin:admin -X POST "http://localhost:${{ env.SONARQUBE_PORT }}/api/users/change_password" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              --data-urlencode "login=admin" \
+              --data-urlencode "previousPassword=admin" \
+              --data-urlencode "password=${{ secrets.SONARQUBE_ADMIN_PASSWORD }}"
+          else
+            echo "♻️ Conteneur SonarQube existant détecté, redémarrage..."
+            docker start ${{ env.SONARQUBE_CONTAINER_NAME }}
+            sleep 30
+          fi
+
+          echo "✅ SonarQube prêt sur http://localhost:${{ env.SONARQUBE_PORT }}"
+
+      - name: 📊 Exécuter l'analyse SonarQube
+        run: |
+          docker run --rm \
+            -e SONAR_HOST_URL="http://${{ env.SONARQUBE_CONTAINER_NAME }}:${{ env.SONARQUBE_PORT }}" \
+            -v "$(pwd):/usr/src" \
+            -w /usr/src \
+            sonarsource/sonar-scanner-cli \
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }} \
+            -Dsonar.projectName=frontend \
+            -Dsonar.sources=src \
+            -Dsonar.host.url=http://localhost:${{ env.SONARQUBE_PORT }} \
+            -Dsonar.login=${{ env.SONARQUBE_ADMIN_USER }} \
+            -Dsonar.password=${{ secrets.SONARQUBE_ADMIN_PASSWORD }} \
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.js,**/__tests__/** \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.qualitygate.wait=true
+
+      - name: ℹ️ Informations d'accès
+        run: |
+          echo "=============================================="
+          echo "🔍 Analyse SonarQube terminée avec succès!"
+          echo ""
+          echo "📊 Résultats disponibles sur:"
+          echo "http://localhost:${{ env.SONARQUBE_PORT }}/dashboard?id=${{ env.SONAR_PROJECT_KEY }}"
+          echo ""
+          echo "🔑 Identifiants:"
+          echo "Utilisateur: admin"
+          echo "Mot de passe: ${{ secrets.SONARQUBE_ADMIN_PASSWORD }}"
+          echo "=============================================="
 
   build-and-push:
     needs: sonarqube-analysis
@@ -135,10 +182,6 @@ jobs:
           name: react-build
           path: dist/
 
-      - name: 🔄 Récupérer le cache
-        run: |
-          docker pull ${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }} || true
-
       - name: 🐳 Construire et pousser
         uses: docker/build-push-action@v4
         with:
@@ -156,10 +199,6 @@ jobs:
           build-args: |
             NODE_ENV=production
 
-      - name: 🧹 Nettoyer le cache
-        run: |
-          docker builder prune -f
-
   deploy:
     needs: build-and-push
     runs-on: self-hosted
@@ -174,7 +213,6 @@ jobs:
         run: |
           docker stop ${{ env.CONTAINER_NAME }} || true
           docker rm -f ${{ env.CONTAINER_NAME }} || true
-          docker system prune -af --volumes
 
       - name: 🚀 Déployer
         run: |
@@ -190,20 +228,4 @@ jobs:
         run: |
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
-          echo "🚀 Déploiement réussi !"
-
-      - name: 🔍 Vérifier le conteneur dans le runner
-        run: |
-          echo "=== Conteneurs existants ==="
-          docker ps -a
-          
-          echo "=== Statut du conteneur ==="
-          docker inspect -f '{{.State.Status}}' ${{ env.CONTAINER_NAME }} || echo "Conteneur non trouvé"
-          
-          if docker ps -a --format '{{.Names}}' | grep -q ${{ env.CONTAINER_NAME }}; then
-            echo "=== Logs du conteneur ==="
-            docker logs ${{ env.CONTAINER_NAME }}
-          fi
-          
-          echo "=== Test de connexion ==="
-          curl -v http://localhost:${{ env.PORT }}/ || echo "Échec de connexion"
+          echo "🚀 Déploiement réussi!"
