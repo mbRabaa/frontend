@@ -1,4 +1,4 @@
-name: Pipeline CI/CD build app; test unitaire; analyse SonarQube; deploy docker
+name: Pipeline CI/CD build app; test unitaire; Analyse SonarQube; deploy docker
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # Nécessaire pour SonarQube
+          fetch-depth: 0
 
       - name: ⎔ Configurer Node.js
         uses: actions/setup-node@v3
@@ -33,7 +33,7 @@ jobs:
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm run test:coverage  # Génère le rapport lcov pour SonarQube
+          npm run test:coverage  # Ajouté pour générer le rapport de couverture
           echo "👉 Contenu du dossier dist/:"
           ls -lh dist/
 
