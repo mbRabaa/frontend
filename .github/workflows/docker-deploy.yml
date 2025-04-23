@@ -54,8 +54,21 @@ jobs:
           path: dist/
           retention-days: 1
 
-  sonarqube-analysis:
+  unit-tests:
     needs: build-app
+    runs-on: self-hosted
+    steps:
+      - name: 🛎️ Checkout du code
+        uses: actions/checkout@v3
+
+      - name: 🧪 Exécuter les tests unitaires
+        run: |
+          npm test -- --coverage
+          echo "Rapport de couverture généré :"
+          cat coverage/lcov.info
+
+  sonarqube-analysis:
+    needs: unit-tests
     runs-on: self-hosted
     timeout-minutes: 45
     steps:
@@ -64,13 +77,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 🐳 Démarrer SonarQube (Persistant)
+      - name: 🧹 Nettoyer l'environnement
         run: |
-          # Créer des volumes persistants
+          docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+          docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+          docker network prune -f || true
+          sudo fuser -k ${{ env.SONARQUBE_PORT }}/tcp || true
+
+      - name: 🐳 Démarrer SonarQube
+        run: |
           docker volume create sonarqube_data || true
           docker volume create sonarqube_extensions || true
           
-          # Démarrer le conteneur
           docker run -d \
             --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
             -p ${{ env.SONARQUBE_PORT }}:9000 \
@@ -79,19 +97,21 @@ jobs:
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:9.9.1-community
           
-          # Attendre que SonarQube soit prêt
-          timeout 300 bash -c 'while ! curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; do sleep 10; done'
+          timeout 300 bash -c '
+            while ! curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\"";
+            do
+              sleep 10
+              echo "En attente du démarrage de SonarQube..."
+            done'
 
       - name: 🔑 Configurer SonarQube
         run: |
-          # Configurer le mot de passe admin
           curl -u admin:admin -X POST "http://localhost:${{ env.SONARQUBE_PORT }}/api/users/change_password" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "login=admin" \
             --data-urlencode "previousPassword=admin" \
             --data-urlencode "password=${{ secrets.SONAR_ADMIN_PASSWORD }}"
           
-          # Créer un token dédié
           SONAR_TOKEN=$(curl -u admin:${{ secrets.SONAR_ADMIN_PASSWORD }} \
             -X POST "http://localhost:${{ env.SONARQUBE_PORT }}/api/user_tokens/generate" \
             -d "name=github-action" \
@@ -120,7 +140,9 @@ jobs:
           echo "=========================================="
           echo "🔍 Analyse SonarQube terminée avec succès!"
           echo "🌐 Accédez aux résultats sur: http://localhost:${{ env.SONARQUBE_PORT }}"
-          echo "🔑 Identifiants: admin / ${{ secrets.SONAR_ADMIN_PASSWORD }}"
+          echo "🔑 Identifiants:"
+          echo "Utilisateur: admin"
+          echo "Mot de passe: ${{ secrets.SONAR_ADMIN_PASSWORD }}"
           echo "=========================================="
 
   build-and-push:
