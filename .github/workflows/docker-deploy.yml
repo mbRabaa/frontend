@@ -237,29 +237,42 @@ jobs:
       - name: 🔧 Vérifier les prérequis
         run: |
           docker --version
-          kubectl version --client || echo "kubectl non installé"
           which k3s || echo "k3s non installé"
 
-      - name: 🔧 Installer k3s (si nécessaire)
+      - name: 🔧 Installer/configurer k3s
         run: |
           if ! command -v k3s &> /dev/null; then
             echo "Installation de k3s..."
-            curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --disable servicelb" sh -
-            sudo chmod 644 /etc/rancher/k3s/k3s.yaml
-            mkdir -p ~/.kube
-            cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+            curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --disable servicelb --write-kubeconfig-mode 644" sh -
           else
             echo "k3s déjà installé"
           fi
+          
+          # Configurer l'accès kubectl
+          mkdir -p ~/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          sudo chown $(id -u):$(id -g) ~/.kube/config
+          export KUBECONFIG=~/.kube/config
+
+      - name: 🛠️ Vérifier l'accès kubectl
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
 
       - name: 🛠️ Installer MetalLB
         run: |
+          # Donner les permissions nécessaires à l'utilisateur
+          sudo chmod 644 /etc/rancher/k3s/k3s.yaml
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          
           kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+          echo "Attente de l'initialisation de MetalLB..."
           sleep 30
+          
           if [ -d "k8s/metallb/" ]; then
             kubectl apply -f k8s/metallb/
           else
-            echo "Configuration MetalLB non trouvée, utilisation des paramètres par défaut"
+            echo "Configuration MetalLB personnalisée non trouvée"
           fi
 
       - name: 🐳 Déployer Portainer
