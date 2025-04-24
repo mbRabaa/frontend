@@ -230,101 +230,89 @@ jobs:
           echo "🚀 Déploiement réussi!"
 
   deploy-k3s:
-    needs: deploy-docker
-    runs-on: self-hosted
-    timeout-minutes: 60
-    steps:
-      - name: 🛎 Checkout du code (avec fichiers k8s)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+  needs: deploy-docker
+  runs-on: self-hosted
+  timeout-minutes: 60
+  steps:
+    - name: 🛎 Checkout du code (avec fichiers k8s)
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: "🖥️ Installer K3s (si nécessaire)"
-        run: |
-          # Vérifier si k3s est déjà installé
-          if ! command -v k3s &> /dev/null; then
-            echo "Installation de k3s..."
-            curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ env.K3S_VERSION }} sh -s - \
-              --disable metrics-server \
-              --disable traefik \
-              --write-kubeconfig-mode 644 \
-              --kubeconfig-mode 644
-            
-            # Configurer le stockage local
-            sudo mkdir -p /mnt/data/postgres
-            sudo chmod 777 /mnt/data/postgres
-            
-            # Installer le provisioner de stockage local
-            kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml
-          else
-            echo "k3s est déjà installé (version $(k3s --version))"
-          fi
+    - name: "🖥️ Installer K3s (si nécessaire)"
+      run: |
+        # Vérifier si k3s est déjà installé
+        if ! command -v k3s &> /dev/null; then
+          echo "Installation de k3s..."
+          LOCAL_IP=$(hostname -I | awk '{print $1}')
+          curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ env.K3S_VERSION }} sh -s - \
+            --disable metrics-server \
+            --disable traefik \
+            --write-kubeconfig-mode 644 \
+            --tls-san ${LOCAL_IP}
           
-          # Configurer l'accès kubectl
-          mkdir -p $HOME/.kube
-          if [ -f "/etc/rancher/k3s/k3s.yaml" ]; then
-            sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
-            sudo chown $(id -u):$(id -g) $HOME/.kube/config
-            sed -i 's/127.0.0.1/0.0.0.0/g' $HOME/.kube/config
-          else
-            echo "::error::Fichier de configuration k3s introuvable"
-            exit 1
-          fi
+          # Configurer le stockage local
+          sudo mkdir -p /mnt/data/postgres
+          sudo chmod 777 /mnt/data/postgres
+        else
+          echo "k3s est déjà installé (version $(k3s --version))"
+        fi
+        
+        # Configurer l'accès kubectl
+        mkdir -p $HOME/.kube
+        LOCAL_IP=$(hostname -I | awk '{print $1}')
+        sudo sed "s/127.0.0.1/${LOCAL_IP}/g" /etc/rancher/k3s/k3s.yaml > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
 
-      - name: "🔧 Vérifier l'installation"
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          kubectl cluster-info
-          kubectl get nodes
-          kubectl get storageclass
-          kubectl -n local-path-storage get pods
+    - name: "🔧 Vérifier l'installation"
+      run: |
+        export KUBECONFIG=$HOME/.kube/config
+        kubectl cluster-info
+        kubectl get nodes
+        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml
 
-      - name: 🛠️ Installer MetalLB
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
-          echo "Attente de l'initialisation de MetalLB..."
-          sleep 30
-          
-          if [ -d "k8s/metallb/" ]; then
-            kubectl apply -f k8s/metallb/
-          else
-            echo "Configuration MetalLB personnalisée non trouvée"
-          fi
+    - name: 🛠️ Installer MetalLB depuis vos fichiers
+      run: |
+        export KUBECONFIG=$HOME/.kube/config
+        if [ -d "k8s/metallb/" ]; then
+          kubectl apply -f k8s/metallb/
+        else
+          echo "::error::Vos fichiers MetalLB sont introuvables dans k8s/metallb/"
+          exit 1
+        fi
+        sleep 30
 
-      - name: 🐳 Déployer Portainer
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          kubectl create namespace portainer || true
-          if [ -d "k8s/portainer/" ]; then
-            kubectl apply -f k8s/portainer/
-          else
-            echo "::error::Configuration Portainer non trouvée dans k8s/portainer/"
-            exit 1
-          fi
+    - name: 🐳 Déployer Portainer depuis vos fichiers
+      run: |
+        export KUBECONFIG=$HOME/.kube/config
+        if [ -d "k8s/portainer/" ]; then
+          kubectl apply -f k8s/portainer/
+        else
+          echo "::error::Vos fichiers Portainer sont introuvables dans k8s/portainer/"
+          exit 1
+        fi
 
-      - name: 🚀 Déployer le frontend
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          if [ -d "k8s/frontend/" ]; then
-            sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" frontend/k8s/deployment.yaml
-            sed -i "s|\$TAG|${{ github.sha }}|g" frontend/k8s/deployment.yaml
-            kubectl apply -f frontend/k8s/
-          else
-            echo "::error::Configuration frontend non trouvée dans frontend/k8s/"
-            exit 1
-          fi
+    - name: 🚀 Déployer le frontend
+      run: |
+        export KUBECONFIG=$HOME/.kube/config
+        if [ -d "frontend/k8s/" ]; then
+          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" frontend/k8s/deployment.yaml
+          sed -i "s|\$TAG|${{ github.sha }}|g" frontend/k8s/deployment.yaml
+          kubectl apply -f frontend/k8s/
+        else
+          echo "::error::Vos fichiers de déploiement frontend sont introuvables dans frontend/k8s/"
+          exit 1
+        fi
 
-      - name: 📊 Vérifier les déploiements
-        run: |
-          export KUBECONFIG=$HOME/.kube/config
-          echo "=== Pods ==="
-          kubectl get pods -A
-          echo "=== Services ==="
-          kubectl get svc -A
-          echo "=== Stockage ==="
-          kubectl get pv,pvc -A
-          echo "=========================================="
-          echo "🌐 Portainer: http://$(hostname -I | awk '{print $1}'):30001"
-          echo "🚀 Frontend: http://$(kubectl get svc frontend-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-          echo "=========================================="
+    - name: 📊 Vérifier les déploiements
+      run: |
+        export KUBECONFIG=$HOME/.kube/config
+        echo "=== État du cluster ==="
+        kubectl get nodes
+        echo "=== Pods ==="
+        kubectl get pods -A
+        echo "=== Services ==="
+        kubectl get svc -A
+        echo "=== URLs d'accès ==="
+        echo "Portainer: http://$(hostname -I | awk '{print $1}'):$(kubectl get svc -n portainer -o jsonpath='{.items[0].spec.ports[0].nodePort}')"
+        echo "Frontend: http://$(kubectl get svc frontend-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
