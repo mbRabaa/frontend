@@ -17,13 +17,14 @@ env:
   SONARQUBE_PORT: 9000
   SONAR_PROJECT_KEY: frontend-app
   SONAR_PROJECT_NAME: "Frontend Application"
-  SONARQUBE_VERSION: 9.9.4-community  # Version mise à jour
+  SONARQUBE_VERSION: 9.9.4-community
 
 jobs:
   build-app:
     runs-on: self-hosted
+    timeout-minutes: 30
     steps:
-      - name: 🛎️ Checkout du code
+      - name: 🛎 Checkout du code
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
@@ -58,8 +59,9 @@ jobs:
   unit-tests:
     needs: build-app
     runs-on: self-hosted
+    timeout-minutes: 20
     steps:
-      - name: 🛎️ Checkout du code
+      - name: 🛎 Checkout du code
         uses: actions/checkout@v3
 
       - name: ⎔ Configurer Node.js
@@ -80,9 +82,9 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: 🛎️ Checkout du code
+      - name: 🛎 Checkout du code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -92,7 +94,7 @@ jobs:
           docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           docker volume rm -f sonarqube_data sonarqube_extensions sonarqube_logs || true
-          sudo fuser -k ${{ env.SONARQUBE_PORT }}/tcp || true
+          lsof -ti:${{ env.SONARQUBE_PORT}} | xargs -r kill || true
           sleep 5
 
       - name: 🐳 Démarrer SonarQube
@@ -122,10 +124,7 @@ jobs:
 
       - name: 🔑 Configurer l'authentification
         run: |
-          # Attendre que l'API soit complètement disponible
           sleep 30
-          
-          # Vérifier que le token est bien défini
           if [ -z "${{ secrets.SONARQUBE_TOKEN }}" ]; then
             echo "::error::Le token SonarQube n'est pas configuré"
             exit 1
@@ -147,7 +146,6 @@ jobs:
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
-            -Dsonar.password=  # Vide car on utilise un token
 
       - name: ℹ️ Afficher les résultats
         run: |
@@ -159,6 +157,7 @@ jobs:
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
+    timeout-minutes: 30
     steps:
       - name: 🛠️ Configurer Buildx
         uses: docker/setup-buildx-action@v2
@@ -195,9 +194,10 @@ jobs:
           build-args: |
             NODE_ENV=production
 
-  deploy:
+  deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
+    timeout-minutes: 20
     steps:
       - name: 🔑 Connexion Docker
         uses: docker/login-action@v2
@@ -225,5 +225,71 @@ jobs:
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement réussi!"
-    
-    
+
+      - name: ✅ Confirmer la réussite
+        run: echo "Deploy réussi, déclenchant deploy-k3s"
+
+  deploy-k3s:
+    needs: deploy-docker
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - name: 🔧 Vérifier les prérequis
+        run: |
+          docker --version
+          kubectl version --client || echo "kubectl non installé"
+          which k3s || echo "k3s non installé"
+
+      - name: 🔧 Installer k3s (si nécessaire)
+        run: |
+          if ! command -v k3s &> /dev/null; then
+            echo "Installation de k3s..."
+            curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik --disable servicelb" sh -
+            sudo chmod 644 /etc/rancher/k3s/k3s.yaml
+            mkdir -p ~/.kube
+            cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          else
+            echo "k3s déjà installé"
+          fi
+
+      - name: 🛠️ Installer MetalLB
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.7/config/manifests/metallb-native.yaml
+          sleep 30
+          if [ -d "k8s/metallb/" ]; then
+            kubectl apply -f k8s/metallb/
+          else
+            echo "Configuration MetalLB non trouvée, utilisation des paramètres par défaut"
+          fi
+
+      - name: 🐳 Déployer Portainer
+        run: |
+          kubectl create namespace portainer || true
+          if [ -d "k8s/portainer/" ]; then
+            kubectl apply -f k8s/portainer/
+            kubectl patch svc -n portainer portainer-service \
+              --type='json' \
+              -p='[{"op": "add", "path": "/spec/ports/0/nodePort", "value":30001}]'
+          else
+            echo "Configuration Portainer non trouvée"
+          fi
+
+      - name: 🚀 Déployer le frontend
+        run: |
+          if [ -d "k8s/frontend/" ]; then
+            sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/frontend/deployment.yaml
+            sed -i "s|\$TAG|${{ github.sha }}|g" k8s/frontend/deployment.yaml
+            kubectl apply -f k8s/frontend/
+          else
+            echo "Configuration frontend non trouvée"
+            exit 1
+          fi
+
+      - name: 📊 Vérifier les déploiements
+        run: |
+          kubectl get pods -A
+          kubectl get svc -A
+          echo "=========================================="
+          echo "🌐 Portainer: http://$(hostname -I | awk '{print $1}'):30001"
+          echo "🚀 Frontend déployé avec succès sur k3s"
+          echo "=========================================="
