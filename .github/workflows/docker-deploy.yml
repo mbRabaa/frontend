@@ -1,4 +1,4 @@
-name: Pipeline CI/CD Complète build app ; test unitaire; analyse sonarQube; build+push; deploy docker; deploy k3s
+name: Pipeline CI/CD Complète build app ; test unitaire; analyse sonarQube; build+push; deploy docker; deploy k8s
 
 on:
   push:
