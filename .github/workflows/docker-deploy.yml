@@ -225,3 +225,5 @@ jobs:
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement réussi!"
+    
+    
