@@ -1,4 +1,4 @@
-name: chaine CI/CD build app ; test unitaire; analyse sonarQube; build+push; deploy docker; deploy k8s
+name: CI/CD build app ; test unitaire; analyse sonarQube; build+push; deploy docker; deploy k8s
 
 on:
   push:
