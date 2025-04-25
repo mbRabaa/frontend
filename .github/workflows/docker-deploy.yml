@@ -8,6 +8,8 @@ on:
 env:
   # Configuration K3s
   K3S_VERSION: v1.26.5+k3s1
+  PROJECT_ROOT: .
+  K8S_FRONTEND_PATH: k8s/frontend
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
@@ -220,7 +222,7 @@ jobs:
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement Docker réussi!"
 
-  deploy-k3s-with-portainer:
+  eploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
     timeout-minutes: 45
@@ -256,13 +258,10 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
-      - name: 🛠️ Installer MetalLB
+      - name: ✅ Vérifier MetalLB (pré-installé)
         run: |
-          export KUBECONFIG=~/.kube/config
-          kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
-          kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=300s
-          kubectl apply -f k8s/metallb/
-          sleep 30
+          kubectl -n metallb-system get pods || { echo "MetalLB non détecté"; exit 1; }
+          kubectl get ipaddresspools -n metallb-system
 
       - name: Déployer l'application
         working-directory: ${{ env.PROJECT_ROOT }}
@@ -277,4 +276,5 @@ jobs:
           sleep 30
           curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
             -H "Content-Type: application/json" \
-            -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}'
+            -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}' \
+            || echo "Portainer déjà configuré"

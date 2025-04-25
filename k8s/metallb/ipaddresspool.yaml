@@ -1,8 +1,0 @@
-apiVersion: metallb.io/v1beta1
-kind: IPAddressPool
-metadata:
-  name: production-pool
-  namespace: metallb-system
-spec:
-  addresses:
-  - 10.0.2.30-10.0.2.50 # À adapter
