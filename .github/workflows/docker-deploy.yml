@@ -230,42 +230,42 @@ jobs:
           echo "🚀 Déploiement réussi!"
 
   deploy-k3s:
-  needs: deploy-docker
-  runs-on: self-hosted
-  timeout-minutes: 30
-  steps:
-    - name: 🛎 Checkout du code
-      uses: actions/checkout@v4
+    needs: deploy-docker
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: 🛎 Checkout du code
+        uses: actions/checkout@v4
 
-    - name: 🔧 Configurer l'accès kubectl
-      run: |
-        mkdir -p ~/.kube
-        cp /etc/rancher/k3s/k3s.yaml ~/.kube/config || sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-        chmod 600 ~/.kube/config
-        sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
+      - name: 🔧 Configurer l'accès kubectl
+        run: |
+          mkdir -p ~/.kube
+          cp /etc/rancher/k3s/k3s.yaml ~/.kube/config || sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          chmod 600 ~/.kube/config
+          sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
-    - name: 🛠️ Installer MetalLB
-      run: |
-        export KUBECONFIG=~/.kube/config
-        kubectl apply -f k8s/metallb/
-        sleep 30
+      - name: 🛠️ Installer MetalLB
+        run: |
+          export KUBECONFIG=~/.kube/config
+          kubectl apply -f k8s/metallb/
+          sleep 30
 
-    - name: 🐳 Déployer Portainer
-      run: |
-        export KUBECONFIG=~/.kube/config
-        kubectl apply -f k8s/portainer/
+      - name: 🐳 Déployer Portainer
+        run: |
+          export KUBECONFIG=~/.kube/config
+          kubectl apply -f k8s/portainer/
 
-    - name: 🚀 Déployer le frontend
-      run: |
-        export KUBECONFIG=~/.kube/config
-        sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" frontend/k8s/deployment.yaml
-        sed -i "s|\$TAG|${{ github.sha }}|g" frontend/k8s/deployment.yaml
-        kubectl apply -f frontend/k8s/
+      - name: 🚀 Déployer le frontend
+        run: |
+          export KUBECONFIG=~/.kube/config
+          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" frontend/k8s/deployment.yaml
+          sed -i "s|\$TAG|${{ github.sha }}|g" frontend/k8s/deployment.yaml
+          kubectl apply -f frontend/k8s/
 
-    - name: 📊 Vérifier les déploiements
-      run: |
-        export KUBECONFIG=~/.kube/config
-        kubectl get pods -A
-        kubectl get svc -A
-        echo "Portainer: http://$(hostname -I | awk '{print $1}'):30001"
-        echo "Frontend: http://$(kubectl get svc frontend-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+      - name: 📊 Vérifier les déploiements
+        run: |
+          export KUBECONFIG=~/.kube/config
+          kubectl get pods -A
+          kubectl get svc -A
+          echo "Portainer: http://$(hostname -I | awk '{print $1}'):30001"
+          echo "Frontend: http://$(kubectl get svc frontend-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
