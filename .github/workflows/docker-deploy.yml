@@ -247,6 +247,16 @@ jobs:
       - name: 🛠️ Installer MetalLB
         run: |
           export KUBECONFIG=~/.kube/config
+          # Installer MetalLB avec les CRDs
+          kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
+          
+          # Attendre que MetalLB soit prêt
+          kubectl wait --namespace metallb-system \
+            --for=condition=ready pod \
+            --selector=app=metallb \
+            --timeout=300s
+          
+          # Appliquer la configuration IPAddressPool et L2Advertisement
           kubectl apply -f k8s/metallb/
           sleep 30
 
