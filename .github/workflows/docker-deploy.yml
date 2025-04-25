@@ -8,7 +8,7 @@ on:
 env:
   # Configuration K3s
   K3S_VERSION: v1.26.5+k3s1
-  K8S_FRONTEND_PATH: frontend/k8s 
+  K8S_FRONTEND_PATH: ./k8s
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
@@ -255,19 +255,23 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
-      - name: ✅ Vérifier MetalLB (pré-installé)
+      - name: ✅ Vérifier MetalLB
         run: |
           kubectl -n metallb-system get pods || { echo "MetalLB non détecté"; exit 1; }
           kubectl get ipaddresspools -n metallb-system
 
       - name: Déployer l'application
         run: |
-          echo "Déploiement depuis $GITHUB_WORKSPACE/${{ env.K8S_FRONTEND_PATH }}"
-          ls -l ${{ env.K8S_FRONTEND_PATH }}/
-          kubectl apply -f ${{ env.K8S_FRONTEND_PATH }}/namespace.yaml
-          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" ${{ env.K8S_FRONTEND_PATH }}/deployment.yaml
-          sed -i "s|\$TAG|${{ github.sha }}|g" ${{ env.K8S_FRONTEND_PATH }}/deployment.yaml
-          kubectl apply -f ${{ env.K8S_FRONTEND_PATH }}/
+          echo "Répertoire courant: $(pwd)"
+          echo "Contenu du répertoire:"
+          ls -l
+          echo "Contenu de k8s/:"
+          ls -l k8s/
+          
+          kubectl apply -f k8s/namespace.yaml
+          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
+          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          kubectl apply -f k8s/
 
       - name: Configurer Portainer
         run: |
