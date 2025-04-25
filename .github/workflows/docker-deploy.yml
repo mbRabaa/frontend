@@ -1,4 +1,4 @@
-name: CI/CD Complète - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
+name: Pipeline CI/CD Complète - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
 
 on:
   push:
@@ -8,8 +8,7 @@ on:
 env:
   # Configuration K3s
   K3S_VERSION: v1.26.5+k3s1
-  PROJECT_ROOT: .
-  K8S_FRONTEND_PATH: k8s/frontend
+  K8S_FRONTEND_PATH: frontend/k8s 
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
@@ -222,15 +221,13 @@ jobs:
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement Docker réussi!"
 
-  eploy-k3s:
+  deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
     timeout-minutes: 45
     steps:
       - name: Checkout du code
         uses: actions/checkout@v3
-        with:
-          path: ${{ env.PROJECT_ROOT }}
 
       - name: Nettoyer Portainer
         run: |
@@ -264,8 +261,9 @@ jobs:
           kubectl get ipaddresspools -n metallb-system
 
       - name: Déployer l'application
-        working-directory: ${{ env.PROJECT_ROOT }}
         run: |
+          echo "Déploiement depuis $GITHUB_WORKSPACE/${{ env.K8S_FRONTEND_PATH }}"
+          ls -l ${{ env.K8S_FRONTEND_PATH }}/
           kubectl apply -f ${{ env.K8S_FRONTEND_PATH }}/namespace.yaml
           sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" ${{ env.K8S_FRONTEND_PATH }}/deployment.yaml
           sed -i "s|\$TAG|${{ github.sha }}|g" ${{ env.K8S_FRONTEND_PATH }}/deployment.yaml
