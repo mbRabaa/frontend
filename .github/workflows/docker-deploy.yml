@@ -256,12 +256,13 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
-      - name: Installer MetalLB
-        working-directory: ${{ env.PROJECT_ROOT }}
+      - name: 🛠️ Installer MetalLB
         run: |
+          export KUBECONFIG=~/.kube/config
           kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
+          kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=300s
+          kubectl apply -f k8s/metallb/
           sleep 30
-          kubectl apply -f ${{ env.K8S_METALLB_PATH }}/
 
       - name: Déployer l'application
         working-directory: ${{ env.PROJECT_ROOT }}
