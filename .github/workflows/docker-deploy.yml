@@ -9,6 +9,7 @@ env:
   # Configuration K3s
   K3S_VERSION: v1.26.5+k3s1
   K8S_FRONTEND_PATH: ./k8s
+  METALLB_VERSION: v0.13.10
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
@@ -216,16 +217,17 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 45
     steps:
-      - name: Checkout du code
+      - name: 🛎 Checkout du code
         uses: actions/checkout@v3
 
-      - name: Nettoyer Portainer
+      - name: 🧹 Nettoyer Portainer
         run: |
           docker stop portainer || true
           docker rm -f portainer || true
           docker volume rm -f portainer_data || true
           sleep 5
-      - name: Déployer Portainer
+
+      - name: 🐳 Déployer Portainer
         run: |
           docker volume create portainer_data
           docker run -d \
@@ -236,32 +238,70 @@ jobs:
             -v portainer_data:/data \
             --restart unless-stopped \
             portainer/portainer-ce:latest
-      - name: Configurer kubectl
+
+      - name: ⚙️ Configurer kubectl
         run: |
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-      - name: ✅ Vérifier MetalLB
+
+      - name: 🔧 Installer/Mettre à jour MetalLB
         run: |
-          kubectl -n metallb-system get pods || { echo "MetalLB non détecté"; exit 1; }
-          kubectl get ipaddresspools -n metallb-system
-      - name: Déployer l'application
-        run: |
-          echo "Répertoire courant: $(pwd)"
-          echo "Contenu du répertoire:"
-          ls -l
-          echo "Contenu de k8s/:"
-          ls -l k8s/
+          # Désinstaller si déjà présent
+          kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml --ignore-not-found
           
+          # Installer MetalLB
+          kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml
+          
+          # Attendre que MetalLB soit prêt
+          kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=120s
+          
+          # Appliquer la configuration depuis vos fichiers
+          kubectl apply -f k8s/metallb/
+
+      - name: 🚀 Déployer l'application
+        run: |
           kubectl apply -f k8s/namespace.yaml
+          
+          # Mettre à jour les images dans le deployment.yaml
           sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
           sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          
           kubectl apply -f k8s/
-      - name: Configurer Portainer
+          
+          kubectl rollout status deployment/frontend-deployment -n frontend --timeout=180s
+
+      - name: ✅ Vérifier le déploiement
         run: |
-          sleep 30
-          curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
-            -H "Content-Type: application/json" \
-            -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}' \
-            || echo "Portainer déjà configuré"
+          kubectl get pods -n frontend -o wide
+          kubectl get svc -n frontend -o wide
+          kubectl logs deployment/frontend-deployment -n frontend --tail=50
+          
+          EXTERNAL_IP=$(kubectl get svc frontend-service -n frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "❌ Aucune IP externe attribuée"
+            exit 1
+          else
+            echo "✅ IP externe attribuée: $EXTERNAL_IP"
+            curl -sSf http://$EXTERNAL_IP || exit 1
+          fi
+
+      - name: ⚙️ Configurer Portainer
+        run: |
+          for i in {1..30}; do
+            if curl -sSf http://localhost:${{ env.PORTAINER_PORT }}/api/status | grep -q '"Status":"OK"'; then
+              echo "✅ Portainer est prêt!"
+              break
+            fi
+            sleep 5
+            echo "⌛ Tentative $i/30..."
+          done
+          
+          if ! curl -sSf http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin | grep -q '"Username":"admin"'; then
+            curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
+              -H "Content-Type: application/json" \
+              -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}'
+          else
+            echo "Portainer déjà configuré"
+          fi
