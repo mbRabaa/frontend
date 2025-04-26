@@ -4,11 +4,11 @@ metadata:
   name: frontend-service
   namespace: frontend
 spec:
-  type: NodePort  # Changé de LoadBalancer à NodePort
+  type: NodePort  # Ou LoadBalancer si vous avez MetalLB
   selector:
     app: frontend
   ports:
     - protocol: TCP
-      port: 80      # Port interne du service
-      targetPort: 80  # Port du container
-      nodePort: 30080  # Port optionnel (30000-32767)
+      port: 80
+      targetPort: 80
+      nodePort: 30080 
