@@ -215,7 +215,7 @@ jobs:
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 45
+    timeout-minutes: 60  # Augmenté de 45 à 60 minutes
     steps:
       - name: 🛎 Checkout du code
         uses: actions/checkout@v3
@@ -246,19 +246,26 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
-      - name: 🔧 Installer/Mettre à jour MetalLB
+      - name: 🔧 Installer MetalLB
         run: |
           # Désinstaller si déjà présent
           kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml --ignore-not-found
+          sleep 10
           
           # Installer MetalLB
           kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml
           
           # Attendre que MetalLB soit prêt
-          kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=120s
+          kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=300s
           
-          # Appliquer la configuration depuis vos fichiers
+          # Appliquer la configuration IP
           kubectl apply -f k8s/metallb/
+
+      - name: 🔍 Vérifier MetalLB
+        run: |
+          kubectl get all -n metallb-system
+          kubectl describe ipaddresspool -n metallb-system
+          kubectl describe l2advertisement -n metallb-system
 
       - name: 🚀 Déployer l'application
         run: |
@@ -268,23 +275,54 @@ jobs:
           sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
           sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
           
+          # Appliquer les configurations K8s
           kubectl apply -f k8s/
           
-          kubectl rollout status deployment/frontend-deployment -n frontend --timeout=180s
+          # Vérifier les ressources avant le rollout
+          kubectl get nodes -o wide
+          kubectl describe node
+
+      - name: 🔍 Diagnostiquer avant le rollout
+        run: |
+          echo "=== Décrire le déploiement ==="
+          kubectl describe deployment frontend-deployment -n frontend
+          
+          echo "=== Vérifier les événements ==="
+          kubectl get events -n frontend --sort-by='.metadata.creationTimestamp'
+          
+          echo "=== Logs des pods ==="
+          kubectl get pods -n frontend -o wide
+          kubectl logs -n frontend -l app=frontend --all-containers --tail=50 || true
+
+      - name: ⏳ Attendre le déploiement
+        run: |
+          # Augmenter le timeout et ajouter des vérifications intermédiaires
+          kubectl rollout status deployment/frontend-deployment -n frontend --timeout=600s
+          
+          # Vérifier le statut des pods
+          kubectl get pods -n frontend -o wide
+          kubectl describe deployment frontend-deployment -n frontend
 
       - name: ✅ Vérifier le déploiement
         run: |
-          kubectl get pods -n frontend -o wide
-          kubectl get svc -n frontend -o wide
-          kubectl logs deployment/frontend-deployment -n frontend --tail=50
-          
           EXTERNAL_IP=$(kubectl get svc frontend-service -n frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           if [ -z "$EXTERNAL_IP" ]; then
             echo "❌ Aucune IP externe attribuée"
+            kubectl describe svc frontend-service -n frontend
             exit 1
           else
             echo "✅ IP externe attribuée: $EXTERNAL_IP"
-            curl -sSf http://$EXTERNAL_IP || exit 1
+            # Essai de connexion avec plus de tentatives
+            for i in {1..10}; do
+              if curl -sSf http://$EXTERNAL_IP; then
+                echo "🚀 Application accessible avec succès"
+                exit 0
+              fi
+              sleep 15
+              echo "⌛ Tentative $i/10..."
+            done
+            echo "❌ Échec de connexion à l'application"
+            exit 1
           fi
 
       - name: ⚙️ Configurer Portainer

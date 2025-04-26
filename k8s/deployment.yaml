@@ -4,7 +4,7 @@ metadata:
   name: frontend-deployment
   namespace: frontend
 spec:
-  replicas: 3  # Minimum 3 pour haute disponibilité
+  replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -23,15 +23,43 @@ spec:
         image: mbrabaa2023/frontend:latest
         ports:
         - containerPort: 80
+        # Configuration essentielle pour les apps Node.js
+        command: ["npm", "run", "start:prod"]  # À adapter selon votre package.json
+        args: []
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
         livenessProbe:
           httpGet:
             path: /
             port: 80
-          initialDelaySeconds: 30
+          initialDelaySeconds: 45  # Augmenté pour les apps lourdes
           periodSeconds: 10
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /
             port: 80
-          initialDelaySeconds: 5
+          initialDelaySeconds: 10  # Plus court que liveness
           periodSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "80"
+        # Configuration de sécurité
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: true
+        # Lifecycle pour arrêt propre
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 10"]
