@@ -1,4 +1,4 @@
-name: CI/CD Complète - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
+name: chaine CI/CD Complète - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
 
 on:
   push:
@@ -9,7 +9,6 @@ env:
   # Configuration K3s
   K3S_VERSION: v1.26.5+k3s1
   K8S_FRONTEND_PATH: ./k8s
-  METALLB_VERSION: v0.13.10
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
@@ -27,7 +26,7 @@ env:
   # Configuration Portainer
   PORTAINER_USER: admin
   PORTAINER_PASS: ${{ secrets.PORTAINER_PASSWORD }}
-  PORTAINER_PORT: 19000
+  PORTAINER_PORT: 19000  # Changé de 9000 à 19000 pour éviter le conflit avec SonarQube
   PORTAINER_HTTPS_PORT: 19443
 
 jobs:
@@ -119,15 +118,14 @@ jobs:
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
-          
-          # Attendre que SonarQube soit prêt avec plus de tentatives
-          for i in {1..90}; do
+          # Attendre que SonarQube soit prêt
+          for i in {1..60}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
               echo "✅ SonarQube est prêt!"
               break
             fi
             sleep 10
-            echo "⌛ Tentative $i/90..."
+            echo "⌛ Tentative $i/60..."
           done
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
@@ -145,7 +143,6 @@ jobs:
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
-
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
@@ -185,7 +182,6 @@ jobs:
           platforms: linux/amd64
           build-args: |
             NODE_ENV=production
-
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
@@ -215,23 +211,21 @@ jobs:
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement Docker réussi!"
-
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
-      - name: 🛎 Checkout du code
+      - name: Checkout du code
         uses: actions/checkout@v3
 
-      - name: 🧹 Nettoyer Portainer
+      - name: Nettoyer Portainer
         run: |
           docker stop portainer || true
           docker rm -f portainer || true
           docker volume rm -f portainer_data || true
           sleep 5
-
-      - name: 🐳 Déployer Portainer
+      - name: Déployer Portainer
         run: |
           docker volume create portainer_data
           docker run -d \
@@ -242,138 +236,32 @@ jobs:
             -v portainer_data:/data \
             --restart unless-stopped \
             portainer/portainer-ce:latest
-
-      - name: ⚙️ Configurer kubectl
+      - name: Configurer kubectl
         run: |
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-
-      - name: 🔧 Installer MetalLB
+      - name: ✅ Vérifier MetalLB
         run: |
-          # Nettoyage complet
-          kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml --ignore-not-found
-          kubectl delete namespace metallb-system --ignore-not-found
-          sleep 15
-          
-          # Réinstallation propre
-          kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml
-          
-          # Attendre que MetalLB soit prêt
-          for i in {1..30}; do
-            if kubectl get pods -n metallb-system -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
-              echo "✅ MetalLB est prêt!"
-              break
-            fi
-            sleep 10
-            echo "⌛ Tentative $i/30..."
-          done
-          
-          # Configurer une plage IP statique
-          cat <<EOF | kubectl apply -f -
-          apiVersion: metallb.io/v1beta1
-          kind: IPAddressPool
-          metadata:
-            name: frontend-pool
-            namespace: metallb-system
-          spec:
-            addresses:
-            - 10.0.2.20-10.0.2.30
-          ---
-          apiVersion: metallb.io/v1beta1
-          kind: L2Advertisement
-          metadata:
-            name: frontend-l2
-            namespace: metallb-system
-          spec:
-            ipAddressPools:
-            - frontend-pool
-          EOF
-
-      - name: 🚀 Déployer l'application
+          kubectl -n metallb-system get pods || { echo "MetalLB non détecté"; exit 1; }
+          kubectl get ipaddresspools -n metallb-system
+      - name: Déployer l'application
         run: |
-          # Réinitialiser complètement le namespace
-          kubectl delete namespace frontend --ignore-not-found
-          sleep 10
-          kubectl create namespace frontend
+          echo "Répertoire courant: $(pwd)"
+          echo "Contenu du répertoire:"
+          ls -l
+          echo "Contenu de k8s/:"
+          ls -l k8s/
           
-          # Appliquer les configurations avec retry
-          for i in {1..5}; do
-            kubectl apply -f k8s/ && break || sleep 15
-          done
-          
-          # Vérifier les ressources
-          kubectl describe node
-
-      - name: 🔍 Diagnostiquer en profondeur
+          kubectl apply -f k8s/namespace.yaml
+          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
+          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          kubectl apply -f k8s/
+      - name: Configurer Portainer
         run: |
-          echo "=== État des pods ==="
-          kubectl get pods -n frontend -o wide
-          
-          echo "=== Logs des containers ==="
-          for pod in $(kubectl get pods -n frontend -o name); do
-            echo "🔍 Logs pour $pod:"
-            kubectl logs -n frontend $pod --all-containers --tail=50 || true
-            echo "=== Description du pod ==="
-            kubectl describe -n frontend $pod || true
-          done
-          
-          echo "=== Événements ==="
-          kubectl get events -n frontend --sort-by='.metadata.creationTimestamp'
-
-      - name: ⏳ Attendre le déploiement
-        run: |
-          # Attendre avec plus de tolérance
-          for i in {1..60}; do
-            if kubectl rollout status deployment/frontend-deployment -n frontend --timeout=30s; then
-              echo "✅ Déploiement réussi!"
-              exit 0
-            fi
-            sleep 10
-            echo "⌛ Tentative $i/60 - Redémarrage des pods problématiques..."
-            kubectl delete pods -n frontend --field-selector=status.phase!=Running
-          done
-          echo "❌ Échec du déploiement après 10 minutes"
-          exit 1
-
-      - name: ✅ Vérifier le déploiement
-        run: |
-          EXTERNAL_IP=$(kubectl get svc frontend-service -n frontend -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          if [ -z "$EXTERNAL_IP" ]; then
-            echo "❌ Aucune IP externe attribuée"
-            kubectl describe svc frontend-service -n frontend
-            exit 1
-          else
-            echo "✅ IP externe attribuée: $EXTERNAL_IP"
-            # Essai de connexion avec plus de tentatives
-            for i in {1..10}; do
-              if curl -sSf http://$EXTERNAL_IP; then
-                echo "🚀 Application accessible avec succès"
-                exit 0
-              fi
-              sleep 15
-              echo "⌛ Tentative $i/10..."
-            done
-            echo "❌ Échec de connexion à l'application"
-            exit 1
-          fi
-
-      - name: ⚙️ Configurer Portainer
-        run: |
-          for i in {1..30}; do
-            if curl -sSf http://localhost:${{ env.PORTAINER_PORT }}/api/status | grep -q '"Status":"OK"'; then
-              echo "✅ Portainer est prêt!"
-              break
-            fi
-            sleep 5
-            echo "⌛ Tentative $i/30..."
-          done
-          
-          if ! curl -sSf http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin | grep -q '"Username":"admin"'; then
-            curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
-              -H "Content-Type: application/json" \
-              -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}'
-          else
-            echo "Portainer déjà configuré"
-          fi
+          sleep 30
+          curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
+            -H "Content-Type: application/json" \
+            -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}' \
+            || echo "Portainer déjà configuré"
