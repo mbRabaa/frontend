@@ -27,7 +27,7 @@ env:
   # Configuration Portainer
   PORTAINER_USER: admin
   PORTAINER_PASS: ${{ secrets.PORTAINER_PASSWORD }}
-  PORTAINER_PORT: 19000  # Changé de 9000 à 19000 pour éviter le conflit avec SonarQube
+  PORTAINER_PORT: 19000
   PORTAINER_HTTPS_PORT: 19443
 
 jobs:
@@ -119,14 +119,15 @@ jobs:
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
-          # Attendre que SonarQube soit prêt
-          for i in {1..60}; do
+          
+          # Attendre que SonarQube soit prêt avec plus de tentatives
+          for i in {1..90}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
               echo "✅ SonarQube est prêt!"
               break
             fi
             sleep 10
-            echo "⌛ Tentative $i/60..."
+            echo "⌛ Tentative $i/90..."
           done
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
@@ -144,6 +145,7 @@ jobs:
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
@@ -183,6 +185,7 @@ jobs:
           platforms: linux/amd64
           build-args: |
             NODE_ENV=production
+
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
@@ -212,10 +215,11 @@ jobs:
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement Docker réussi!"
+
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 60  # Augmenté de 45 à 60 minutes
+    timeout-minutes: 60
     steps:
       - name: 🛎 Checkout du code
         uses: actions/checkout@v3
@@ -248,60 +252,90 @@ jobs:
 
       - name: 🔧 Installer MetalLB
         run: |
-          # Désinstaller si déjà présent
+          # Nettoyage complet
           kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml --ignore-not-found
-          sleep 10
+          kubectl delete namespace metallb-system --ignore-not-found
+          sleep 15
           
-          # Installer MetalLB
+          # Réinstallation propre
           kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/${{ env.METALLB_VERSION }}/config/manifests/metallb-native.yaml
           
           # Attendre que MetalLB soit prêt
-          kubectl wait --namespace metallb-system --for=condition=ready pod --selector=app=metallb --timeout=300s
+          for i in {1..30}; do
+            if kubectl get pods -n metallb-system -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
+              echo "✅ MetalLB est prêt!"
+              break
+            fi
+            sleep 10
+            echo "⌛ Tentative $i/30..."
+          done
           
-          # Appliquer la configuration IP
-          kubectl apply -f k8s/metallb/
-
-      - name: 🔍 Vérifier MetalLB
-        run: |
-          kubectl get all -n metallb-system
-          kubectl describe ipaddresspool -n metallb-system
-          kubectl describe l2advertisement -n metallb-system
+          # Configurer une plage IP statique
+          cat <<EOF | kubectl apply -f -
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: frontend-pool
+            namespace: metallb-system
+          spec:
+            addresses:
+            - 10.0.2.20-10.0.2.30
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: frontend-l2
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+            - frontend-pool
+          EOF
 
       - name: 🚀 Déployer l'application
         run: |
-          kubectl apply -f k8s/namespace.yaml
+          # Réinitialiser complètement le namespace
+          kubectl delete namespace frontend --ignore-not-found
+          sleep 10
+          kubectl create namespace frontend
           
-          # Mettre à jour les images dans le deployment.yaml
-          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
-          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          # Appliquer les configurations avec retry
+          for i in {1..5}; do
+            kubectl apply -f k8s/ && break || sleep 15
+          done
           
-          # Appliquer les configurations K8s
-          kubectl apply -f k8s/
-          
-          # Vérifier les ressources avant le rollout
-          kubectl get nodes -o wide
+          # Vérifier les ressources
           kubectl describe node
 
-      - name: 🔍 Diagnostiquer avant le rollout
+      - name: 🔍 Diagnostiquer en profondeur
         run: |
-          echo "=== Décrire le déploiement ==="
-          kubectl describe deployment frontend-deployment -n frontend
-          
-          echo "=== Vérifier les événements ==="
-          kubectl get events -n frontend --sort-by='.metadata.creationTimestamp'
-          
-          echo "=== Logs des pods ==="
+          echo "=== État des pods ==="
           kubectl get pods -n frontend -o wide
-          kubectl logs -n frontend -l app=frontend --all-containers --tail=50 || true
+          
+          echo "=== Logs des containers ==="
+          for pod in $(kubectl get pods -n frontend -o name); do
+            echo "🔍 Logs pour $pod:"
+            kubectl logs -n frontend $pod --all-containers --tail=50 || true
+            echo "=== Description du pod ==="
+            kubectl describe -n frontend $pod || true
+          done
+          
+          echo "=== Événements ==="
+          kubectl get events -n frontend --sort-by='.metadata.creationTimestamp'
 
       - name: ⏳ Attendre le déploiement
         run: |
-          # Augmenter le timeout et ajouter des vérifications intermédiaires
-          kubectl rollout status deployment/frontend-deployment -n frontend --timeout=600s
-          
-          # Vérifier le statut des pods
-          kubectl get pods -n frontend -o wide
-          kubectl describe deployment frontend-deployment -n frontend
+          # Attendre avec plus de tolérance
+          for i in {1..60}; do
+            if kubectl rollout status deployment/frontend-deployment -n frontend --timeout=30s; then
+              echo "✅ Déploiement réussi!"
+              exit 0
+            fi
+            sleep 10
+            echo "⌛ Tentative $i/60 - Redémarrage des pods problématiques..."
+            kubectl delete pods -n frontend --field-selector=status.phase!=Running
+          done
+          echo "❌ Échec du déploiement après 10 minutes"
+          exit 1
 
       - name: ✅ Vérifier le déploiement
         run: |
