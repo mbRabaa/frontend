@@ -1,4 +1,4 @@
-name: CI/CD Complète - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
+name: CI/CD Complète - Build, Test unitaire, Analyse SonarQube, Déploiement Docker+K3s
 
 on:
   push:
