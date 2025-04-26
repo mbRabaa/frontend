@@ -1,4 +1,4 @@
-name: chaine CI/CD Complète - Build, Test unitaire, Analyse SonarQube, Déploiement Docker+K3s
+name: CI/CD Complète - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
 
 on:
   push:
@@ -49,7 +49,6 @@ jobs:
         run: |
           npm ci --prefer-offline
           npm install -D @vitest/coverage-v8
-
       - name: 🛠️ Builder l'application
         run: |
           npm run build
@@ -58,7 +57,6 @@ jobs:
           ls -lh dist/
           echo "👉 Rapport de couverture dans coverage/:"
           ls -lh coverage/
-
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
         with:
@@ -106,7 +104,6 @@ jobs:
           docker volume rm -f sonarqube_data sonarqube_extensions sonarqube_logs || true
           lsof -ti:${{ env.SONARQUBE_PORT}} | xargs -r kill || true
           sleep 5
-
       - name: 🐳 Démarrer SonarQube
         run: |
           docker volume create sonarqube_data || true
@@ -121,7 +118,6 @@ jobs:
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
-
           # Attendre que SonarQube soit prêt
           for i in {1..60}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
@@ -131,7 +127,6 @@ jobs:
             sleep 10
             echo "⌛ Tentative $i/60..."
           done
-
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
         env:
@@ -148,7 +143,6 @@ jobs:
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
-
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
@@ -188,7 +182,6 @@ jobs:
           platforms: linux/amd64
           build-args: |
             NODE_ENV=production
-
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
@@ -204,7 +197,6 @@ jobs:
         run: |
           docker stop ${{ env.CONTAINER_NAME }} || true
           docker rm -f ${{ env.CONTAINER_NAME }} || true
-
       - name: 🚀 Déployer
         run: |
           docker pull ${{ env.DOCKER_IMAGE }}:latest
@@ -214,93 +206,62 @@ jobs:
             --restart unless-stopped \
             -e NODE_ENV=production \
             ${{ env.DOCKER_IMAGE }}:latest
-
       - name: ✅ Vérification
         run: |
           sleep 15
           curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
           echo "🚀 Déploiement Docker réussi!"
-
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
     timeout-minutes: 45
     steps:
-      - name: 🛎 Checkout du code
+      - name: Checkout du code
         uses: actions/checkout@v3
 
-      - name: � Nettoyer Portainer
+      - name: Nettoyer Portainer
         run: |
           docker stop portainer || true
           docker rm -f portainer || true
           docker volume rm -f portainer_data || true
           sleep 5
-
-      - name: 🐳 Déployer Portainer (avec accès K3s)
+      - name: Déployer Portainer
         run: |
-          mkdir -p ~/.kube
-          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-          sudo chown $USER:$USER ~/.kube/config
-          sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-
           docker volume create portainer_data
           docker run -d \
             --name portainer \
             -p ${{ env.PORTAINER_PORT }}:9000 \
             -p ${{ env.PORTAINER_HTTPS_PORT }}:9443 \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v ~/.kube/config:/kube/config \
             -v portainer_data:/data \
             --restart unless-stopped \
             portainer/portainer-ce:latest
-
-      - name: ⚙️ Configurer Portainer
+      - name: Configurer kubectl
         run: |
-          echo "⌛ Attente du démarrage de Portainer..."
-          sleep 30
+          mkdir -p ~/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+          sudo chown $USER:$USER ~/.kube/config
+          sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
+      - name: ✅ Vérifier MetalLB
+        run: |
+          kubectl -n metallb-system get pods || { echo "MetalLB non détecté"; exit 1; }
+          kubectl get ipaddresspools -n metallb-system
+      - name: Déployer l'application
+        run: |
+          echo "Répertoire courant: $(pwd)"
+          echo "Contenu du répertoire:"
+          ls -l
+          echo "Contenu de k8s/:"
+          ls -l k8s/
           
-          # Initialisation uniquement si nécessaire
-          if ! curl -s http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin | grep -q '"Username":"admin"'; then
-            curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
-              -H "Content-Type: application/json" \
-              -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}' \
-              && echo "✅ Portainer initialisé"
-          fi
-
-          # Ajouter le cluster K3s
-          curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/endpoints \
+          kubectl apply -f k8s/namespace.yaml
+          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
+          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          kubectl apply -f k8s/
+      - name: Configurer Portainer
+        run: |
+          sleep 30
+          curl -X POST http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init \
             -H "Content-Type: application/json" \
-            -u "admin:${{ env.PORTAINER_PASS }}" \
-            -d '{
-              "Name": "k3s-cluster",
-              "EndpointType": 3,
-              "URL": "https://kubernetes.default.svc",
-              "TLS": true,
-              "KubernetesConfig": {
-                "Configuration": "$(cat ~/.kube/config | base64 -w0)"
-              }
-            }' && echo "✅ Cluster K3s ajouté à Portainer"
-
-      - name: 🚀 Déployer sur K3s
-        run: |
-          kubectl apply -f ${{ env.K8S_FRONTEND_PATH }}/namespace.yaml
-          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" ${{ env.K8S_FRONTEND_PATH }}/deployment.yaml
-          sed -i "s|\$TAG|${{ github.sha }}|g" ${{ env.K8S_FRONTEND_PATH }}/deployment.yaml
-          kubectl apply -f ${{ env.K8S_FRONTEND_PATH }}/
-
-      - name: 🔍 Vérifier les Pods
-        run: |
-          echo "📋 Liste des Pods:"
-          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
-          echo ""
-          echo "📦 Liste des Deployments:"
-          kubectl get deployments -n ${{ env.K8S_NAMESPACE }}
-          echo ""
-          echo "🌐 Liste des Services:"
-          kubectl get svc -n ${{ env.K8S_NAMESPACE }}
-
-      - name: 🌐 Vérifier l'accès
-        run: |
-          EXTERNAL_IP=$(kubectl get svc -n ${{ env.K8S_NAMESPACE }} frontend-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          echo "🔄 Test d'accès à http://$EXTERNAL_IP..."
-          curl -sSf http://$EXTERNAL_IP || exit 1
+            -d '{"Username":"admin","Password":"'"${{ env.PORTAINER_PASS }}"'"}' \
+            || echo "Portainer déjà configuré"
