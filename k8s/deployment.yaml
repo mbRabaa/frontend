@@ -23,9 +23,7 @@ spec:
         image: mbrabaa2023/frontend:latest
         ports:
         - containerPort: 80
-        # Configuration essentielle pour les apps Node.js
-        command: ["npm", "run", "start:prod"]  # À adapter selon votre package.json
-        args: []
+        command: ["npm", "run", "start:prod"]
         resources:
           requests:
             cpu: "200m"
@@ -37,28 +35,27 @@ spec:
           httpGet:
             path: /
             port: 80
-          initialDelaySeconds: 45  # Augmenté pour les apps lourdes
+          initialDelaySeconds: 60  # Augmenté pour permettre le démarrage
           periodSeconds: 10
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /
             port: 80
-          initialDelaySeconds: 10  # Plus court que liveness
+          initialDelaySeconds: 20
           periodSeconds: 5
-          successThreshold: 1
           failureThreshold: 3
         env:
         - name: NODE_ENV
           value: "production"
         - name: PORT
           value: "80"
-        # Configuration de sécurité
         securityContext:
           runAsNonRoot: true
           runAsUser: 1000
-          readOnlyRootFilesystem: true
-        # Lifecycle pour arrêt propre
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         lifecycle:
           preStop:
             exec:

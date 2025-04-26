@@ -225,6 +225,7 @@ jobs:
           docker rm -f portainer || true
           docker volume rm -f portainer_data || true
           sleep 5
+
       - name: Déployer Portainer
         run: |
           docker volume create portainer_data
@@ -236,28 +237,48 @@ jobs:
             -v portainer_data:/data \
             --restart unless-stopped \
             portainer/portainer-ce:latest
+
       - name: Configurer kubectl
         run: |
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-      - name: ✅ Vérifier MetalLB
+
+      - name: Nettoyer l'ancien déploiement
         run: |
-          kubectl -n metallb-system get pods || { echo "MetalLB non détecté"; exit 1; }
-          kubectl get ipaddresspools -n metallb-system
+          kubectl delete deployment frontend-deployment -n frontend --ignore-not-found
+          kubectl delete service frontend-service -n frontend --ignore-not-found
+          sleep 10
+
       - name: Déployer l'application
         run: |
-          echo "Répertoire courant: $(pwd)"
-          echo "Contenu du répertoire:"
-          ls -l
-          echo "Contenu de k8s/:"
-          ls -l k8s/
+          # Modifier le service.yaml pour utiliser NodePort
+          sed -i 's/LoadBalancer/NodePort/g' k8s/service.yaml
+          sed -i "/nodePort/d" k8s/service.yaml  # Supprimer l'ancienne définition si elle existe
+          sed -i "/port: 80/a\      nodePort: ${{ env.NODE_PORT }}" k8s/service.yaml
           
           kubectl apply -f k8s/namespace.yaml
           sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
           sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
           kubectl apply -f k8s/
+
+      - name: Vérifier le déploiement
+        run: |
+          # Attendre que les pods soient prêts
+          sleep 30
+          
+          echo "=== État des pods ==="
+          kubectl get pods -n frontend -o wide
+          
+          echo "=== État du service ==="
+          kubectl get svc -n frontend -o wide
+          
+          echo "=== Logs des pods ==="
+          kubectl logs -n frontend -l app=frontend --tail=50 || true
+          
+          echo "Application accessible sur: http://$(hostname -I | awk '{print $1}'):${{ env.NODE_PORT }}"
+
       - name: Configurer Portainer
         run: |
           sleep 30

@@ -3,15 +3,12 @@ kind: Service
 metadata:
   name: frontend-service
   namespace: frontend
-  annotations:
-    metallb.universe.tf/allow-shared-ip: "true"
 spec:
+  type: NodePort  # Changé de LoadBalancer à NodePort
   selector:
     app: frontend
   ports:
-    - name: http
-      protocol: TCP
-      port: 80
-      targetPort: 80
-  type: LoadBalancer
-  externalTrafficPolicy: Local
+    - protocol: TCP
+      port: 80      # Port interne du service
+      targetPort: 80  # Port du container
+      nodePort: 30080  # Port optionnel (30000-32767)
