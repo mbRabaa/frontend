@@ -9,6 +9,7 @@ env:
   # Configuration K3s
   K3S_VERSION: v1.26.5+k3s1
   K8S_FRONTEND_PATH: ./k8s
+  NODE_PORT: 30080
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
@@ -214,10 +215,40 @@ jobs:
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 45
+    timeout-minutes: 60  # Augmentation du timeout
     steps:
       - name: Checkout du code
         uses: actions/checkout@v3
+
+      - name: Préparer l'environnement K3s
+        run: |
+          # Arrêter et nettoyer K3s
+          sudo systemctl stop k3s || true
+          sudo k3s-killall.sh || true
+          
+          # Nettoyer containerd
+          sudo ctr -n k8s.io tasks kill --all || true
+          sudo ctr -n k8s.io tasks rm -f $(sudo ctr -n k8s.io tasks ls -q) || true
+          sudo ctr -n k8s.io containers rm $(sudo ctr -n k8s.io containers ls -q) || true
+          sudo rm -rf /var/lib/rancher/k3s/agent/containerd/* || true
+          
+          # Nettoyer le réseau
+          sudo ip link delete cni0 || true
+          sudo ip link delete flannel.1 || true
+          sudo rm -rf /var/lib/cni/ || true
+          sudo rm -rf /etc/cni/net.d/* || true
+          
+          # Reconfigurer containerd
+          sudo containerd config default | sudo tee /etc/containerd/config.toml
+          sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+          
+          # Redémarrer les services
+          sudo systemctl restart containerd
+          sudo systemctl restart k3s
+          
+          # Attendre que K3s soit prêt
+          sleep 30
+          kubectl get nodes
 
       - name: Nettoyer Portainer
         run: |
@@ -243,19 +274,20 @@ jobs:
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
+          sudo chmod 600 ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
       - name: Nettoyer l'ancien déploiement
         run: |
-          kubectl delete deployment frontend-deployment -n frontend --ignore-not-found
-          kubectl delete service frontend-service -n frontend --ignore-not-found
-          sleep 10
+          kubectl delete deployment frontend-deployment -n frontend --ignore-not-found || true
+          kubectl delete service frontend-service -n frontend --ignore-not-found || true
+          sleep 15
 
       - name: Déployer l'application
         run: |
-          # Modifier le service.yaml pour utiliser NodePort
+          # Modifier les fichiers de déploiement
           sed -i 's/LoadBalancer/NodePort/g' k8s/service.yaml
-          sed -i "/nodePort/d" k8s/service.yaml  # Supprimer l'ancienne définition si elle existe
+          sed -i "/nodePort/d" k8s/service.yaml
           sed -i "/port: 80/a\      nodePort: ${{ env.NODE_PORT }}" k8s/service.yaml
           
           kubectl apply -f k8s/namespace.yaml
@@ -265,18 +297,32 @@ jobs:
 
       - name: Vérifier le déploiement
         run: |
-          # Attendre que les pods soient prêts
-          sleep 30
+          # Attendre avec vérification active
+          for i in {1..30}; do
+            if kubectl get pods -n frontend -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
+              echo "✅ Tous les pods sont Running!"
+              break
+            fi
+            echo "⌛ Tentative $i/30 - En attente que les pods démarrent..."
+            kubectl get pods -n frontend -o wide
+            sleep 10
+          done
           
-          echo "=== État des pods ==="
+          # Debug complet si échec
+          if ! kubectl get pods -n frontend -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
+            echo "=== Échec du déploiement ==="
+            echo "=== Détails des pods ==="
+            kubectl describe pods -n frontend
+            echo "=== Logs des conteneurs ==="
+            kubectl logs -n frontend -l app=frontend --tail=50 || true
+            echo "=== Événements ==="
+            kubectl get events -n frontend --sort-by=.metadata.creationTimestamp
+            exit 1
+          fi
+          
+          echo "=== État final ==="
           kubectl get pods -n frontend -o wide
-          
-          echo "=== État du service ==="
           kubectl get svc -n frontend -o wide
-          
-          echo "=== Logs des pods ==="
-          kubectl logs -n frontend -l app=frontend --tail=50 || true
-          
           echo "Application accessible sur: http://$(hostname -I | awk '{print $1}'):${{ env.NODE_PORT }}"
 
       - name: Configurer Portainer
