@@ -3,8 +3,11 @@ kind: Deployment
 metadata:
   name: frontend-deployment
   namespace: frontend
+  labels:
+    app: frontend
 spec:
-  replicas: 1  # Réduire à 1 pour le debug
+  replicas: 1
+  revisionHistoryLimit: 3  # Limite le nombre de revisions conservées
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -20,28 +23,46 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: $DOCKER_IMAGE:$TAG  # Doit être remplacé par le workflow
-        imagePullPolicy: Always
+        image: $DOCKER_IMAGE:$TAG
+        imagePullPolicy: IfNotPresent  # Changé pour optimiser les pulls
         ports:
         - containerPort: 80
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
         resources:
           requests:
             cpu: "100m"
             memory: "128Mi"
           limits:
             cpu: "500m"
-            memory: "512Mi"  # Augmenter la mémoire
+            memory: "512Mi"
         livenessProbe:
           httpGet:
             path: /
-            port: 80
-          initialDelaySeconds: 60  # Augmenter le délai
+            port: http  # Référence au port nommé
+            scheme: HTTP
+          initialDelaySeconds: 30  # Délai réduit mais suffisant
           periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
           failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /
-            port: 80
-          initialDelaySeconds: 30  # Augmenter le délai
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5  # Délai plus court pour readiness
           periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
           failureThreshold: 3
+        startupProbe:  # Ajout d'une startupProbe
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          failureThreshold: 30  # Nombre élevé pour les apps qui démarrent lentement
+          periodSeconds: 10

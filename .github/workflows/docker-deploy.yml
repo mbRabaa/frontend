@@ -237,6 +237,10 @@ jobs:
             --disable traefik \
             --node-ip $(hostname -I | awk '{print $1}')
           
+          # Installer Metrics Server
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          kubectl patch deployment metrics-server -n kube-system --type 'json' -p '[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+          
           # Attendre que K3s soit prêt
           sleep 30
 
@@ -254,16 +258,17 @@ jobs:
 
       - name: Nettoyer l'ancien déploiement
         run: |
-          kubectl delete deployment frontend-deployment -n frontend --ignore-not-found || true
-          kubectl delete service frontend-service -n frontend --ignore-not-found || true
+          kubectl delete all -l app=frontend -n frontend --ignore-not-found || true
+          kubectl delete pvc -l app=frontend -n frontend --ignore-not-found || true
+          kubectl delete namespace frontend --ignore-not-found || true
           sleep 15
 
       - name: Déployer l'application
         run: |
-          # Créer le namespace s'il n'existe pas
+          # Créer le namespace
           kubectl create namespace frontend || true
           
-          # Appliquer les configurations
+          # Appliquer les configurations avec les nouvelles probes
           sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
           sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
           
@@ -278,24 +283,20 @@ jobs:
         run: |
           # Attendre avec vérification active
           for i in {1..30}; do
-            if kubectl get pods -n frontend -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
-              echo "✅ Tous les pods sont Running!"
+            READY=$(kubectl get pods -n frontend -o jsonpath='{.items[*].status.containerStatuses[?(@.ready==true)].name}' | wc -w)
+            if [ "$READY" -eq 1 ]; then
+              echo "✅ Tous les conteneurs sont prêts!"
               break
             fi
-            echo "⌛ Tentative $i/30 - En attente que les pods démarrent..."
+            echo "⌛ Tentative $i/30 - En attente que les conteneurs démarrent..."
             kubectl get pods -n frontend -o wide
+            kubectl describe pods -n frontend
             sleep 10
           done
           
-          # Debug complet si échec
-          if ! kubectl get pods -n frontend -o jsonpath='{.items[*].status.phase}' | grep -q "Running"; then
+          if [ "$READY" -ne 1 ]; then
             echo "=== Échec du déploiement ==="
-            echo "=== Détails des pods ==="
-            kubectl describe pods -n frontend
-            echo "=== Logs des conteneurs ==="
-            kubectl logs -n frontend -l app=frontend --tail=50 || true
-            echo "=== Événements ==="
-            kubectl get events -n frontend --sort-by=.metadata.creationTimestamp
+            kubectl logs -n frontend -l app=frontend --tail=50
             exit 1
           fi
           
@@ -306,6 +307,8 @@ jobs:
 
       - name: Déployer Portainer
         run: |
+          docker stop portainer || true
+          docker rm -f portainer || true
           docker volume create portainer_data || true
           docker run -d \
             --name portainer \
