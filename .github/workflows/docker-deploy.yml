@@ -215,59 +215,30 @@ jobs:
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 60  # Augmentation du timeout
+    timeout-minutes: 60
     steps:
       - name: Checkout du code
         uses: actions/checkout@v3
 
       - name: Préparer l'environnement K3s
         run: |
-          # Arrêter et nettoyer K3s
+          # Arrêter K3s proprement
           sudo systemctl stop k3s || true
-          sudo k3s-killall.sh || true
           
-          # Nettoyer containerd
-          sudo ctr -n k8s.io tasks kill --all || true
-          sudo ctr -n k8s.io tasks rm -f $(sudo ctr -n k8s.io tasks ls -q) || true
-          sudo ctr -n k8s.io containers rm $(sudo ctr -n k8s.io containers ls -q) || true
-          sudo rm -rf /var/lib/rancher/k3s/agent/containerd/* || true
+          # Nettoyage approfondi
+          sudo rm -f /etc/rancher/k3s/k3s.yaml
+          sudo rm -rf /var/lib/rancher/k3s/
+          sudo rm -rf /var/lib/cni/
+          sudo rm -rf /etc/cni/net.d/*
           
-          # Nettoyer le réseau
-          sudo ip link delete cni0 || true
-          sudo ip link delete flannel.1 || true
-          sudo rm -rf /var/lib/cni/ || true
-          sudo rm -rf /etc/cni/net.d/* || true
-          
-          # Reconfigurer containerd
-          sudo containerd config default | sudo tee /etc/containerd/config.toml
-          sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
-          
-          # Redémarrer les services
-          sudo systemctl restart containerd
-          sudo systemctl restart k3s
+          # Réinstaller K3s avec les bonnes permissions
+          curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ env.K3S_VERSION }} sh -s - \
+            --write-kubeconfig-mode 644 \
+            --disable traefik \
+            --node-ip $(hostname -I | awk '{print $1}')
           
           # Attendre que K3s soit prêt
           sleep 30
-          kubectl get nodes
-
-      - name: Nettoyer Portainer
-        run: |
-          docker stop portainer || true
-          docker rm -f portainer || true
-          docker volume rm -f portainer_data || true
-          sleep 5
-
-      - name: Déployer Portainer
-        run: |
-          docker volume create portainer_data
-          docker run -d \
-            --name portainer \
-            -p ${{ env.PORTAINER_PORT }}:9000 \
-            -p ${{ env.PORTAINER_HTTPS_PORT }}:9443 \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v portainer_data:/data \
-            --restart unless-stopped \
-            portainer/portainer-ce:latest
 
       - name: Configurer kubectl
         run: |
@@ -276,6 +247,10 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           sudo chmod 600 ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
+          
+          # Vérification
+          kubectl cluster-info
+          kubectl get nodes
 
       - name: Nettoyer l'ancien déploiement
         run: |
@@ -285,14 +260,18 @@ jobs:
 
       - name: Déployer l'application
         run: |
-          # Modifier les fichiers de déploiement
+          # Créer le namespace s'il n'existe pas
+          kubectl create namespace frontend || true
+          
+          # Appliquer les configurations
+          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
+          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
+          
+          # Modifier le service pour utiliser NodePort
           sed -i 's/LoadBalancer/NodePort/g' k8s/service.yaml
           sed -i "/nodePort/d" k8s/service.yaml
           sed -i "/port: 80/a\      nodePort: ${{ env.NODE_PORT }}" k8s/service.yaml
           
-          kubectl apply -f k8s/namespace.yaml
-          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
-          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
           kubectl apply -f k8s/
 
       - name: Vérifier le déploiement
@@ -324,6 +303,18 @@ jobs:
           kubectl get pods -n frontend -o wide
           kubectl get svc -n frontend -o wide
           echo "Application accessible sur: http://$(hostname -I | awk '{print $1}'):${{ env.NODE_PORT }}"
+
+      - name: Déployer Portainer
+        run: |
+          docker volume create portainer_data || true
+          docker run -d \
+            --name portainer \
+            -p ${{ env.PORTAINER_PORT }}:9000 \
+            -p ${{ env.PORTAINER_HTTPS_PORT }}:9443 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v portainer_data:/data \
+            --restart unless-stopped \
+            portainer/portainer-ce:latest
 
       - name: Configurer Portainer
         run: |
