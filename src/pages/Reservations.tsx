@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Calendar, MapPin } from 'lucide-react';
@@ -21,28 +20,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from '@/lib/utils';
 import { useToast } from "@/hooks/use-toast";
+import axios from 'axios'; // 📦 Axios importé ici
 
 const cities = [
   "Tunis", "Sousse", "Sfax", "Monastir", "Gabès", "Bizerte", "Tozeur", "Mahdia", 
   "Kairouan", "Nabeul", "Hammamet", "Djerba", "Tabarka", "Zarzis", "Béja"
 ];
 
+// 🔥 Ton URL du Gateway API
+const API_GATEWAY_URL = 'http://localhost:8080/api/reservations'; 
+
 export default function ReservationPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const { toast } = useToast();
-  
+
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [date, setDate] = useState<Date | undefined>(undefined);
   const [seats, setSeats] = useState('1');
-  
+
   const selectedJourneyId = location.state?.journeyId;
-  
+
   useEffect(() => {
     if (selectedJourneyId) {
-      // Simuler le chargement des données du voyage sélectionné
-      // Dans une application réelle, vous feriez une requête API
       if (selectedJourneyId === '1') {
         setOrigin('Tunis');
         setDestination('Sousse');
@@ -50,7 +51,7 @@ export default function ReservationPage() {
       }
     }
   }, [selectedJourneyId]);
-  
+
   const handleCancel = () => {
     toast({
       title: "Réservation annulée",
@@ -58,10 +59,10 @@ export default function ReservationPage() {
     });
     navigate('/');
   };
-  
-  const handleSubmit = (e: React.FormEvent) => {
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!origin || !destination || !date) {
       toast({
         title: "Informations incomplètes",
@@ -70,29 +71,35 @@ export default function ReservationPage() {
       });
       return;
     }
-    
-    // Simuler la création d'une réservation
-    // Dans une application réelle, vous feriez une requête API
-    
-    navigate('/paiements', {
-      state: {
-        reservation: {
-          origin,
-          destination,
-          date,
-          seats: parseInt(seats),
-          price: origin === 'Tunis' && destination === 'Sousse' ? 15500 : 10000,
-        }
-      }
-    });
+
+    try {
+      const { data: reservation } = await axios.post(API_GATEWAY_URL, {
+        origin,
+        destination,
+        date: date.toISOString(),
+        seats: parseInt(seats),
+      });
+
+      navigate('/paiements', {
+        state: { reservation },
+      });
+
+    } catch (error: any) {
+      console.error(error);
+      toast({
+        title: "Erreur",
+        description: error.response?.data?.message || "Impossible de réserver. Veuillez réessayer.",
+        variant: "destructive",
+      });
+    }
   };
-  
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl animate-fade-in">
       <div className="bg-white rounded-xl shadow-md overflow-hidden">
         <div className="px-6 py-8">
           <h1 className="text-2xl font-bold text-center mb-8">Formulaire de Réservation</h1>
-          
+
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -109,7 +116,7 @@ export default function ReservationPage() {
                 </SelectContent>
               </Select>
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Destination
@@ -125,7 +132,7 @@ export default function ReservationPage() {
                 </SelectContent>
               </Select>
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Date de réservation
@@ -149,12 +156,12 @@ export default function ReservationPage() {
                     selected={date}
                     onSelect={setDate}
                     initialFocus
-                    className={cn("p-3 pointer-events-auto")}
+                    className="p-3"
                   />
                 </PopoverContent>
               </Popover>
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Nombre de places
@@ -168,18 +175,18 @@ export default function ReservationPage() {
                 className="w-full"
               />
             </div>
-            
+
             <div className="flex gap-4 pt-4">
-              <Button 
-                type="button" 
-                variant="outline" 
+              <Button
+                type="button"
+                variant="outline"
                 className="flex-1"
                 onClick={handleCancel}
               >
                 Annuler
               </Button>
-              <Button 
-                type="submit" 
+              <Button
+                type="submit"
                 className="flex-1 bg-tunisbus-600 hover:bg-tunisbus-700 text-white"
               >
                 Réserver et Payer

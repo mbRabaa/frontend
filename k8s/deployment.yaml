@@ -6,7 +6,7 @@ metadata:
   labels:
     app: frontend
 spec:
-  replicas: 1
+  replicas: 3
   revisionHistoryLimit: 3  # Limite le nombre de revisions conservées
   strategy:
     type: RollingUpdate

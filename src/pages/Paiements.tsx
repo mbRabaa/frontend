@@ -1,7 +1,6 @@
-
-import { useState, useEffect } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Calendar, Check } from 'lucide-react';
+import { Calendar, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { Button } from "@/components/ui/button";
@@ -9,8 +8,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
+import axios from 'axios';
 
+// Types
 interface Reservation {
+  id: string;
   origin: string;
   destination: string;
   date: Date;
@@ -18,68 +20,132 @@ interface Reservation {
   price: number;
 }
 
+interface PaiementResponse {
+  id: string;
+  reservation_id: string;
+  montant: number;
+  statut: 'pending' | 'completed' | 'failed';
+  created_at: string;
+}
+
+// Helpers
+const formatCardNumber = (value: string) =>
+  value.replace(/\D/g, '').replace(/(\d{4})/g, '$1 ').trim().slice(0, 19);
+
+const formatExpiryDate = (value: string) =>
+  value.replace(/\D/g, '').replace(/(\d{2})(\d)/, '$1/$2').slice(0, 5);
+
+// Component
 export default function PaiementPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const { toast } = useToast();
-  
+
   const [reservation, setReservation] = useState<Reservation | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState('credit');
+  const [paymentMethod, setPaymentMethod] = useState<'credit' | 'debit'>('credit');
   const [cardHolder, setCardHolder] = useState('');
   const [cardNumber, setCardNumber] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [cvc, setCvc] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  
+
+  const API_GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:8000';
+
+  const serviceCharge = 100;
+  const totalPrice = reservation ? reservation.price + serviceCharge : 0;
+
   useEffect(() => {
     if (location.state?.reservation) {
-      setReservation(location.state.reservation);
+      setReservation(location.state.reservation as Reservation);
     } else {
-      // Si pas de réservation, retour à la page d'accueil
-      navigate('/');
-    }
-  }, [location.state, navigate]);
-  
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!cardHolder || !cardNumber || !expiryDate || !cvc) {
+      navigate('/', { replace: true });
       toast({
-        title: "Informations de paiement incomplètes",
-        description: "Veuillez remplir tous les champs de paiement",
+        title: "Erreur",
+        description: "Aucune réservation trouvée.",
+        variant: "destructive",
+      });
+    }
+  }, [location.state, navigate, toast]);
+
+  const validateCard = (): string | null => {
+    if (cardNumber.replace(/\s/g, '').length !== 16) return "Numéro de carte invalide.";
+    if (!/^\d{2}\/\d{2}$/.test(expiryDate)) return "Date d'expiration invalide (MM/AA).";
+    if (cvc.length !== 3) return "Code CVC invalide.";
+    return null;
+  };
+
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    const validationError = validateCard();
+    if (validationError) {
+      toast({
+        title: "Erreur de validation",
+        description: validationError,
         variant: "destructive",
       });
       return;
     }
-    
+
     setIsLoading(true);
-    
-    // Simuler un traitement de paiement
-    setTimeout(() => {
-      setIsLoading(false);
-      toast({
-        title: "Paiement réussi!",
-        description: "Votre réservation a été confirmée. Vous recevrez un email de confirmation.",
-        variant: "default",
+
+    try {
+      const paymentData = {
+        reservation_id: reservation?.id,
+        montant: totalPrice,
+        mode_paiement: paymentMethod,
+        metadata: {
+          card_last4: cardNumber.slice(-4),
+          card_brand: paymentMethod === 'credit' ? 'visa' : 'mastercard',
+        },
+      };
+
+      const { data } = await axios.post<PaiementResponse>(`${API_GATEWAY_URL}/api/paiements`, paymentData, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json',
+        },
       });
-      navigate('/');
-    }, 2000);
+
+      if (data.statut !== 'completed') {
+        throw new Error("Le paiement n'a pas été finalisé.");
+      }
+
+      navigate('/confirmation', {
+        state: {
+          paiement: data,
+          reservation,
+        },
+        replace: true,
+      });
+    } catch (error) {
+      console.error('Erreur de paiement:', error);
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.message || error.message
+        : (error as Error).message;
+
+      toast({
+        title: "Échec du paiement",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
-  
+
   if (!reservation) {
-    return <div className="p-8 text-center">Chargement...</div>;
+    return (
+      <div className="flex justify-center items-center h-screen">
+        <Loader2 className="animate-spin h-12 w-12 text-blue-500" />
+      </div>
+    );
   }
-  
-  const serviceCharge = 100;
-  const totalPrice = reservation.price + serviceCharge;
-  
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl animate-fade-in">
       <div className="mb-6">
-        <button 
-          onClick={() => navigate(-1)}
-          className="flex items-center text-gray-600 hover:text-tunisbus-700"
-        >
+        <Button variant="ghost" onClick={() => navigate(-1)} className="flex items-center gap-2">
           <svg 
             xmlns="http://www.w3.org/2000/svg" 
             width="20" 
@@ -89,72 +155,56 @@ export default function PaiementPage() {
             stroke="currentColor" 
             strokeWidth="2" 
             strokeLinecap="round" 
-            strokeLinejoin="round" 
-            className="mr-2"
+            strokeLinejoin="round"
           >
-            <path d="m15 18-6-6 6-6"/>
+            <path d="m15 18-6-6 6-6" />
           </svg>
-          Paiement
-        </button>
+          Retour
+        </Button>
       </div>
-      
+
       <div className="grid md:grid-cols-2 gap-8">
+        {/* Formulaire de paiement */}
         <div className="bg-white rounded-xl shadow-md overflow-hidden">
           <div className="px-6 py-8">
-            <h2 className="text-xl font-semibold mb-6">Créer une réservation</h2>
-            
+            <h2 className="text-2xl font-bold mb-6">Paiement sécurisé</h2>
+
             <form onSubmit={handleSubmit} className="space-y-6">
-              <div>
-                <Label>Trajet</Label>
-                <div className="border border-gray-200 rounded-md p-3 flex items-center mt-1">
-                  {reservation.origin} → {reservation.destination} ({reservation.price} DT)
-                </div>
-              </div>
-              
-              <div>
-                <Label>Date du voyage</Label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Calendar size={18} className="text-gray-500" />
+              {/* Résumé du trajet */}
+              <div className="space-y-4">
+                <h3 className="font-semibold text-lg">Votre trajet</h3>
+                <div className="border border-gray-200 rounded-lg p-4">
+                  <div className="flex justify-between items-center">
+                    <span className="font-medium">{reservation.origin} → {reservation.destination}</span>
+                    <span className="text-blue-600 font-bold">{reservation.price} DT</span>
                   </div>
-                  <Input
-                    type="text"
-                    value={format(reservation.date, 'dd/MM/yyyy', { locale: fr })}
-                    readOnly
-                    className="pl-10"
-                  />
+                  <div className="flex items-center gap-2 mt-2 text-sm text-gray-500">
+                    <Calendar size={16} />
+                    {format(reservation.date, 'PPPP', { locale: fr })}
+                  </div>
+                  <div className="mt-2 text-sm">{reservation.seats} {reservation.seats > 1 ? 'places' : 'place'}</div>
                 </div>
               </div>
-              
-              <div>
-                <Label>Nombre de places</Label>
-                <Input
-                  type="number"
-                  value={reservation.seats}
-                  readOnly
-                  className="w-full"
-                />
-              </div>
-              
-              <div className="pt-4">
-                <h3 className="text-lg font-medium mb-3">Moyen de paiement</h3>
-                <RadioGroup value={paymentMethod} onValueChange={setPaymentMethod} className="space-y-3">
-                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3">
-                    <RadioGroupItem id="credit" value="credit" />
+
+              {/* Moyen de paiement */}
+              <div className="space-y-4">
+                <h3 className="font-semibold text-lg">Moyen de paiement</h3>
+                <RadioGroup value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as 'credit' | 'debit')} className="space-y-3">
+                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3 hover:border-blue-500">
+                    <RadioGroupItem value="credit" id="credit" />
                     <Label htmlFor="credit" className="flex-1 cursor-pointer">Carte de crédit</Label>
                   </div>
-                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3">
-                    <RadioGroupItem id="debit" value="debit" />
+                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3 hover:border-blue-500">
+                    <RadioGroupItem value="debit" id="debit" />
                     <Label htmlFor="debit" className="flex-1 cursor-pointer">Carte de débit</Label>
-                  </div>
-                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3">
-                    <RadioGroupItem id="transfer" value="transfer" />
-                    <Label htmlFor="transfer" className="flex-1 cursor-pointer">Virement bancaire</Label>
                   </div>
                 </RadioGroup>
               </div>
-              
-              <div className="space-y-4 pt-4">
+
+              {/* Informations de paiement */}
+              <div className="space-y-4">
+                <h3 className="font-semibold text-lg">Informations de paiement</h3>
+
                 <div>
                   <Label htmlFor="cardHolder">Nom sur la carte</Label>
                   <Input
@@ -162,27 +212,32 @@ export default function PaiementPage() {
                     placeholder="John Doe"
                     value={cardHolder}
                     onChange={(e) => setCardHolder(e.target.value)}
+                    required
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="cardNumber">Numéro de carte</Label>
                   <Input
                     id="cardNumber"
                     placeholder="1234 5678 9012 3456"
-                    value={cardNumber}
+                    value={formatCardNumber(cardNumber)}
                     onChange={(e) => setCardNumber(e.target.value)}
+                    maxLength={19}
+                    required
                   />
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="expiryDate">Date d'expiration</Label>
+                    <Label htmlFor="expiryDate">Date d'expiration (MM/AA)</Label>
                     <Input
                       id="expiryDate"
-                      placeholder="MM/YY"
-                      value={expiryDate}
+                      placeholder="MM/AA"
+                      value={formatExpiryDate(expiryDate)}
                       onChange={(e) => setExpiryDate(e.target.value)}
+                      maxLength={5}
+                      required
                     />
                   </div>
                   <div>
@@ -191,78 +246,50 @@ export default function PaiementPage() {
                       id="cvc"
                       placeholder="123"
                       value={cvc}
-                      onChange={(e) => setCvc(e.target.value)}
+                      onChange={(e) => setCvc(e.target.value.replace(/\D/g, '').slice(0, 3))}
+                      maxLength={3}
+                      required
                     />
                   </div>
                 </div>
               </div>
-              
-              <Button
-                type="submit"
-                className="w-full bg-tunisbus-600 hover:bg-tunisbus-700 text-white mt-6"
-                disabled={isLoading}
-              >
+
+              <Button type="submit" className="w-full h-12 text-lg" disabled={isLoading}>
                 {isLoading ? (
-                  <span className="flex items-center">
-                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
+                  <>
+                    <Loader2 className="animate-spin mr-2 h-5 w-5" />
                     Traitement en cours...
-                  </span>
+                  </>
                 ) : (
-                  `Confirmer le paiement (${totalPrice.toLocaleString()} DT)`
+                  `Payer ${totalPrice.toLocaleString('fr-TN')} DT`
                 )}
               </Button>
             </form>
           </div>
         </div>
-        
-        <div className="bg-white rounded-xl shadow-md overflow-hidden h-fit">
+
+        {/* Récapitulatif */}
+        <div className="bg-white rounded-xl shadow-md overflow-hidden h-fit sticky top-8">
           <div className="px-6 py-8">
-            <h2 className="text-xl font-semibold mb-6">Récapitulatif</h2>
-            
+            <h2 className="text-2xl font-bold mb-6">Récapitulatif</h2>
             <div className="space-y-6">
-              <div>
-                <div className="text-lg font-medium mb-2">
-                  {reservation.origin} → {reservation.destination}
-                </div>
-                <div className="text-sm text-gray-500">
-                  {format(reservation.date, 'dd/MM/yyyy', { locale: fr })} • {reservation.seats > 1 ? `${reservation.seats} places` : '1 place'}
-                </div>
+              <div className="flex justify-between">
+                <span>Prix du trajet</span>
+                <span>{reservation.price} DT</span>
               </div>
-              
-              <div className="py-4 border-t border-gray-100">
-                <div className="flex justify-between mb-2">
-                  <span>Sous-total</span>
-                  <span>{reservation.price.toLocaleString()} DT</span>
-                </div>
-                <div className="flex justify-between mb-4 text-sm text-gray-500">
-                  <span>Frais de service</span>
-                  <span>{serviceCharge.toLocaleString()} DT</span>
-                </div>
-                <div className="flex justify-between font-bold text-lg pt-2 border-t border-gray-100">
-                  <span>Total</span>
-                  <span>{totalPrice.toLocaleString()} DT</span>
-                </div>
+              <div className="flex justify-between">
+                <span>Frais de service</span>
+                <span>{serviceCharge} DT</span>
               </div>
-              
-              <div className="bg-green-50 p-4 rounded-lg">
-                <div className="flex items-start">
-                  <div className="flex-shrink-0 mt-0.5">
-                    <Check size={18} className="text-green-600" />
-                  </div>
-                  <div className="ml-3">
-                    <h3 className="text-sm font-medium text-green-800">Paiement sécurisé</h3>
-                    <p className="mt-1 text-sm text-green-700">
-                      Vos données de paiement sont sécurisées et cryptées pour votre protection.
-                    </p>
-                  </div>
-                </div>
+              <hr />
+              <div className="flex justify-between font-bold">
+                <span>Total</span>
+                <span>{totalPrice} DT</span>
               </div>
             </div>
           </div>
         </div>
+
       </div>
     </div>
   );
