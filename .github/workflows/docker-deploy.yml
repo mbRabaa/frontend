@@ -150,14 +150,13 @@ jobs:
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
-    timeout-minutes: 90  # Augmenté pour les gros builds
+    timeout-minutes: 30
     steps:
       - name: 🛠️ Configurer Buildx
         uses: docker/setup-buildx-action@v2
         with:
           driver: docker-container
           install: true
-          buildkitd-flags: --debug
 
       - name: 🔑 Connexion à Docker Hub
         uses: docker/login-action@v2
@@ -171,31 +170,22 @@ jobs:
           name: react-build
           path: dist/
 
-      - name: 🧹 Nettoyer le cache Docker
-        run: |
-          docker builder prune -f
-          docker buildx prune -f
-
-      - name: 🐳 Construire et pousser l'image (optimisé)
-        run: |
-          # Construction avec cache optimisé
-          docker buildx build \
-            --push \
-            --tag ${{ env.DOCKER_IMAGE }}:latest \
-            --tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} \
-            --cache-from type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }} \
-            --cache-to type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max,compression=zstd \
-            --platform linux/amd64 \
-            --build-arg NODE_ENV=production \
-            --progress plain \
-            .
-
-      - name: ✅ Vérifier les images
-        run: |
-          docker pull ${{ env.DOCKER_IMAGE }}:latest --quiet
-          echo "✅ Images poussées avec succès:"
-          echo "- ${{ env.DOCKER_IMAGE }}:latest"
-          echo "- ${{ env.DOCKER_IMAGE }}:${{ github.sha }}"
+      - name: 🐳 Construire et pousser
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          cache-from: |
+            type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }}
+          cache-to: |
+            type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max
+          platforms: linux/amd64
+          build-args: |
+            NODE_ENV=production
 
   deploy-docker:
     needs: build-and-push
