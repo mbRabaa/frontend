@@ -16,6 +16,7 @@ env:
   CONTAINER_NAME: frontend-prod
   PORT: 80
   CACHE_TAG: buildcache
+  DOCKER_BUILDKIT: 1  # Activation de BuildKit
   
   # Configuration SonarQube
   SONARQUBE_CONTAINER_NAME: sonarqube
@@ -50,6 +51,7 @@ jobs:
         run: |
           npm ci --prefer-offline
           npm install -D @vitest/coverage-v8
+          
       - name: 🛠️ Builder l'application
         run: |
           npm run build
@@ -58,6 +60,7 @@ jobs:
           ls -lh dist/
           echo "👉 Rapport de couverture dans coverage/:"
           ls -lh coverage/
+          
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
         with:
@@ -144,17 +147,10 @@ jobs:
             -Dsonar.qualitygate.wait=true \
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
 
-      - name: ℹ️ Afficher les résultats
-        run: |
-          echo "=========================================="
-          echo "🔍 Analyse SonarQube terminée avec succès!"
-          echo "🌐 Accédez aux résultats sur: http://localhost:${{ env.SONARQUBE_PORT }}"
-          echo "=========================================="
-
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
-    timeout-minutes: 45
+    timeout-minutes: 90  # Augmenté pour les gros builds
     steps:
       - name: 🛠️ Configurer Buildx
         uses: docker/setup-buildx-action@v2
@@ -175,21 +171,28 @@ jobs:
           name: react-build
           path: dist/
 
-      - name: 🐳 Construire et pousser l'image
+      - name: 🧹 Nettoyer le cache Docker
         run: |
+          docker builder prune -f
+          docker buildx prune -f
+
+      - name: 🐳 Construire et pousser l'image (optimisé)
+        run: |
+          # Construction avec cache optimisé
           docker buildx build \
             --push \
             --tag ${{ env.DOCKER_IMAGE }}:latest \
             --tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} \
             --cache-from type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }} \
-            --cache-to type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max \
+            --cache-to type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max,compression=zstd \
             --platform linux/amd64 \
             --build-arg NODE_ENV=production \
+            --progress plain \
             .
 
-      - name: 🚀 Vérifier le push
+      - name: ✅ Vérifier les images
         run: |
-          docker pull ${{ env.DOCKER_IMAGE }}:latest
+          docker pull ${{ env.DOCKER_IMAGE }}:latest --quiet
           echo "✅ Images poussées avec succès:"
           echo "- ${{ env.DOCKER_IMAGE }}:latest"
           echo "- ${{ env.DOCKER_IMAGE }}:${{ github.sha }}"
@@ -209,6 +212,7 @@ jobs:
         run: |
           docker stop ${{ env.CONTAINER_NAME }} || true
           docker rm -f ${{ env.CONTAINER_NAME }} || true
+
       - name: 🚀 Déployer
         run: |
           docker pull ${{ env.DOCKER_IMAGE }}:latest
@@ -218,6 +222,7 @@ jobs:
             --restart unless-stopped \
             -e NODE_ENV=production \
             ${{ env.DOCKER_IMAGE }}:latest
+
       - name: ✅ Vérification
         run: |
           sleep 15
@@ -276,25 +281,16 @@ jobs:
           kubectl cluster-info
           kubectl get nodes -o wide
 
-      - name: Nettoyer l'ancien déploiement
-        run: |
-          kubectl delete all -l app=frontend -n frontend --ignore-not-found || true
-          kubectl delete pvc -l app=frontend -n frontend --ignore-not-found || true
-          kubectl delete namespace frontend --ignore-not-found || true
-          sleep 15
-
       - name: Déployer l'application
         run: |
           kubectl create namespace frontend || true
           
-          sed -i "s|\$DOCKER_IMAGE|${{ env.DOCKER_IMAGE }}|g" k8s/deployment.yaml
-          sed -i "s|\$TAG|${{ github.sha }}|g" k8s/deployment.yaml
-          
-          sed -i 's/LoadBalancer/NodePort/g' k8s/service.yaml
-          sed -i "/nodePort/d" k8s/service.yaml
-          sed -i "/port: 80/a\      nodePort: ${{ env.NODE_PORT }}" k8s/service.yaml
-          
-          kubectl apply -f k8s/
+          # Utilisation d'envsubst pour le templating
+          export DOCKER_IMAGE=${{ env.DOCKER_IMAGE }}
+          export TAG=${{ github.sha }}
+          export NODE_PORT=${{ env.NODE_PORT }}
+          envsubst < k8s/deployment.yaml | kubectl apply -f -
+          envsubst < k8s/service.yaml | kubectl apply -f -
 
       - name: Vérifier le déploiement
         run: |
