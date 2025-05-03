@@ -91,26 +91,20 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 30  # Augmenté pour laisser plus de temps à SonarQube
+    timeout-minutes: 30
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🧹 Nettoyer l'environnement
+      - name: 🐳 Démarrer SonarQube (avec persistance)
         run: |
-          docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
-          docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
-          docker volume rm -f sonarqube_data sonarqube_extensions sonarqube_logs || true
-          sudo fuser -k ${{ env.SONARQUBE_PORT }}/tcp || true
-          sleep 5
-
-      - name: 🐳 Démarrer SonarQube
-        run: |
-          docker volume create sonarqube_data || true
-          docker volume create sonarqube_extensions || true
-          docker volume create sonarqube_logs || true
+          if ! docker volume inspect sonarqube_data >/dev/null 2>&1; then
+            docker volume create sonarqube_data
+            docker volume create sonarqube_extensions
+            docker volume create sonarqube_logs
+          fi
           
           docker run -d \
             --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
@@ -122,32 +116,29 @@ jobs:
             sonarqube:${{ env.SONARQUBE_VERSION }}
 
           # Attendre que SonarQube soit opérationnel
-          for i in {1..120}; do
+          for i in {1..30}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
               echo "✅ SonarQube est prêt!"
-              # Attendre encore 30 secondes pour être sûr que tout est initialisé
-              sleep 30
               break
             fi
             sleep 10
-            echo "⌛ Tentative $i/120..."
           done
 
       - name: 🔍 Exécuter l'analyse SonarQube
-        uses: SonarSource/sonarqube-scan-action@v4
-        env:
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
-          SONAR_HOST_URL: http://localhost:${{ env.SONARQUBE_PORT }}
-        with:
-          args: >
-            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
-            -Dsonar.projectName="${{ env.SONAR_PROJECT_NAME }}"
-            -Dsonar.sources=src
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            -Dsonar.exclusions=**/node_modules/**,**/*.test.js
-            -Dsonar.sourceEncoding=UTF-8
-            -Dsonar.qualitygate.wait=true
-            -Dsonar.qualitygate.timeout=600
+        run: |
+          docker run --rm \
+            -e SONAR_HOST_URL="http://localhost:${{ env.SONARQUBE_PORT }}" \
+            -e SONAR_TOKEN="${{ secrets.SONARQUBE_TOKEN }}" \
+            -v "$(pwd):/usr/src" \
+            sonarsource/sonar-scanner-cli \
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }} \
+            -Dsonar.projectName="${{ env.SONAR_PROJECT_NAME }}" \
+            -Dsonar.sources=src \
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.js \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
 
       - name: ℹ️ Afficher les résultats
         run: |
