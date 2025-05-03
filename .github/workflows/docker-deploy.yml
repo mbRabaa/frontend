@@ -20,8 +20,8 @@ env:
   # Configuration SonarQube
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
-  SONAR_PROJECT_KEY: frontend-app
-  SONAR_PROJECT_NAME: "Frontend Application"
+  SONAR_PROJECT_KEY: frontend
+  SONAR_PROJECT_NAME: "Frontend"
   SONARQUBE_VERSION: 9.9.4-community
   
   # Configuration Portainer
@@ -91,9 +91,9 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
-      - name: 🛎 Checkout du code
+      - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -103,9 +103,8 @@ jobs:
           docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           docker volume rm -f sonarqube_data sonarqube_extensions sonarqube_logs || true
-          lsof -ti:${{ env.SONARQUBE_PORT}} | xargs -r kill || true
+          sudo fuser -k ${{ env.SONARQUBE_PORT }}/tcp || true
           sleep 5
-
       - name: 🐳 Démarrer SonarQube
         run: |
           docker volume create sonarqube_data || true
@@ -120,17 +119,25 @@ jobs:
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
-          
-          # Attendre que SonarQube soit prêt
+          # Attendre que SonarQube soit opérationnel
           for i in {1..60}; do
-            if curl -sSf -u ${{ secrets.SONARQUBE_TOKEN }}: http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
+            if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
               echo "✅ SonarQube est prêt!"
               break
             fi
             sleep 10
             echo "⌛ Tentative $i/60..."
           done
-
+      - name: 🔑 Configurer l'authentification
+        run: |
+          # Attendre que l'API soit complètement disponible
+          sleep 30
+          
+          # Vérifier que le token est bien défini
+          if [ -z "${{ secrets.SONARQUBE_TOKEN }}" ]; then
+            echo "::error::Le token SonarQube n'est pas configuré"
+            exit 1
+          fi
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
         env:
@@ -146,6 +153,14 @@ jobs:
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.password=  # Vide car on utilise un token
+      - name: ℹ️ Afficher les résultats
+        run: |
+          echo "=========================================="
+          echo "🔍 Analyse SonarQube terminée avec succès!"
+          echo "🌐 Accédez aux résultats sur: http://localhost:${{ env.SONARQUBE_PORT }}"
+          echo "=========================================="
 
   build-and-push:
     needs: sonarqube-analysis
