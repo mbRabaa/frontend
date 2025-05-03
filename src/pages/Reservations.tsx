@@ -20,15 +20,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from '@/lib/utils';
 import { useToast } from "@/hooks/use-toast";
-import axios from 'axios'; // 📦 Axios importé ici
+import axios from 'axios';
 
 const cities = [
   "Tunis", "Sousse", "Sfax", "Monastir", "Gabès", "Bizerte", "Tozeur", "Mahdia", 
   "Kairouan", "Nabeul", "Hammamet", "Djerba", "Tabarka", "Zarzis", "Béja"
 ];
 
-// 🔥 Ton URL du Gateway API
-const API_GATEWAY_URL = 'http://localhost:8080/api/reservations'; 
+const API_GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL + '/api/reservations';
 
 export default function ReservationPage() {
   const location = useLocation();
@@ -39,6 +38,7 @@ export default function ReservationPage() {
   const [destination, setDestination] = useState('');
   const [date, setDate] = useState<Date | undefined>(undefined);
   const [seats, setSeats] = useState('1');
+  const [trajetId, setTrajetId] = useState('1'); // Défaut ou récupéré dynamiquement
 
   const selectedJourneyId = location.state?.journeyId;
 
@@ -48,6 +48,7 @@ export default function ReservationPage() {
         setOrigin('Tunis');
         setDestination('Sousse');
         setDate(new Date('2025-06-15'));
+        setTrajetId('1'); // Correspond au trajet dans la base
       }
     }
   }, [selectedJourneyId]);
@@ -74,21 +75,28 @@ export default function ReservationPage() {
 
     try {
       const { data: reservation } = await axios.post(API_GATEWAY_URL, {
+        seats: parseInt(seats),
+        trajet_id: parseInt(trajetId)
+      });
+
+      // Ajoute les infos supplémentaires pour l'affichage frontend
+      const fullReservation = {
+        ...reservation,
         origin,
         destination,
         date: date.toISOString(),
-        seats: parseInt(seats),
-      });
+        date_depart: date.toISOString() // Pour compatibilité avec l'existant
+      };
 
       navigate('/paiements', {
-        state: { reservation },
+        state: { reservation: fullReservation },
       });
 
     } catch (error: any) {
-      console.error(error);
+      console.error('Erreur complète:', error);
       toast({
         title: "Erreur",
-        description: error.response?.data?.message || "Impossible de réserver. Veuillez réessayer.",
+        description: error.response?.data?.error || "Impossible de réserver. Veuillez réessayer.",
         variant: "destructive",
       });
     }

@@ -1,6 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Calendar, Loader2 } from 'lucide-react';
+import { Calendar, Loader2, Ticket, CreditCard, Banknote, ArrowLeft } from 'lucide-react';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { Button } from "@/components/ui/button";
@@ -10,9 +10,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 import axios from 'axios';
 
-// Types
 interface Reservation {
-  id: string;
+  id?: string; // ID rendu optionnel
   origin: string;
   destination: string;
   date: Date;
@@ -22,20 +21,18 @@ interface Reservation {
 
 interface PaiementResponse {
   id: string;
-  reservation_id: string;
   montant: number;
-  statut: 'pending' | 'completed' | 'failed';
+  statut: string;
   created_at: string;
+  mode_paiement: string;
 }
 
-// Helpers
 const formatCardNumber = (value: string) =>
   value.replace(/\D/g, '').replace(/(\d{4})/g, '$1 ').trim().slice(0, 19);
 
 const formatExpiryDate = (value: string) =>
   value.replace(/\D/g, '').replace(/(\d{2})(\d)/, '$1/$2').slice(0, 5);
 
-// Component
 export default function PaiementPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -47,30 +44,50 @@ export default function PaiementPage() {
   const [cardNumber, setCardNumber] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [cvc, setCvc] = useState('');
+  const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(false);
+  const [paymentDetails, setPaymentDetails] = useState<PaiementResponse | null>(null);
 
-  const API_GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:8000';
-
+  const API_BASE_URL = 'http://localhost:8000'; // Pointant vers le gateway
   const serviceCharge = 100;
-  const totalPrice = reservation ? reservation.price + serviceCharge : 0;
+
+  // Calcul du prix total
+  const totalPrice = (reservation?.price || 0) + serviceCharge;
+  const formattedTotalPrice = totalPrice.toFixed(2);
+  const formattedReservationPrice = (reservation?.price || 0).toFixed(2);
 
   useEffect(() => {
-    if (location.state?.reservation) {
-      setReservation(location.state.reservation as Reservation);
-    } else {
-      navigate('/', { replace: true });
+    if (!location.state?.reservation) {
       toast({
-        title: "Erreur",
-        description: "Aucune réservation trouvée.",
+        title: "Information requise",
+        description: "Les détails de la réservation sont manquants",
         variant: "destructive",
       });
+      navigate('/');
+      return;
     }
+
+    const res = location.state.reservation;
+    setReservation({
+      origin: res.origin || "Non spécifié",
+      destination: res.destination || "Non spécifié",
+      date: res.date ? new Date(res.date) : new Date(),
+      seats: Number(res.seats) || 1,
+      price: Number(res.price) || 0
+    });
   }, [location.state, navigate, toast]);
 
   const validateCard = (): string | null => {
-    if (cardNumber.replace(/\s/g, '').length !== 16) return "Numéro de carte invalide.";
-    if (!/^\d{2}\/\d{2}$/.test(expiryDate)) return "Date d'expiration invalide (MM/AA).";
-    if (cvc.length !== 3) return "Code CVC invalide.";
+    const cleanCardNumber = cardNumber.replace(/\s/g, '');
+
+    if (cleanCardNumber.length !== 16) return "Numéro de carte invalide (16 chiffres requis)";
+    if (!/^\d{16}$/.test(cleanCardNumber)) return "Le numéro ne doit contenir que des chiffres";
+    if (!/^\d{2}\/\d{2}$/.test(expiryDate)) return "Format de date invalide (MM/AA requis)";
+    if (!/^\d{3}$/.test(cvc)) return "Code de sécurité invalide (3 chiffres requis)";
+    if (cardHolder.trim().length < 3) return "Nom sur carte invalide (3 caractères minimum)";
+    if (!/^\S+@\S+\.\S+$/.test(email)) return "Email invalide";
+
     return null;
   };
 
@@ -79,11 +96,7 @@ export default function PaiementPage() {
 
     const validationError = validateCard();
     if (validationError) {
-      toast({
-        title: "Erreur de validation",
-        description: validationError,
-        variant: "destructive",
-      });
+      toast({ title: "Erreur", description: validationError, variant: "destructive" });
       return;
     }
 
@@ -91,42 +104,41 @@ export default function PaiementPage() {
 
     try {
       const paymentData = {
-        reservation_id: reservation?.id,
         montant: totalPrice,
         mode_paiement: paymentMethod,
-        metadata: {
-          card_last4: cardNumber.slice(-4),
-          card_brand: paymentMethod === 'credit' ? 'visa' : 'mastercard',
-        },
+        card_last4: cardNumber.replace(/\s/g, '').slice(-4),
+        card_brand: paymentMethod === 'credit' ? 'visa' : 'mastercard',
+        client_email: email,
+        client_name: cardHolder,
+        trajet: `${reservation?.origin || ''} → ${reservation?.destination || ''}`,
+        date_trajet: reservation?.date ? format(reservation.date, 'yyyy-MM-dd') : null
       };
 
-      const { data } = await axios.post<PaiementResponse>(`${API_GATEWAY_URL}/api/paiements`, paymentData, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json',
-        },
+      const { data } = await axios.post<PaiementResponse>(
+        `${API_BASE_URL}/api/paiements`,
+        paymentData
+      );
+
+      setPaymentDetails(data);
+      setPaymentSuccess(true);
+
+      toast({
+        title: "Paiement réussi",
+        description: "Votre transaction a été confirmée",
+        variant: "default",
       });
 
-      if (data.statut !== 'completed') {
-        throw new Error("Le paiement n'a pas été finalisé.");
+    } catch (error: any) {
+      console.error("Erreur de paiement:", error);
+      
+      let errorMessage = "Erreur lors du paiement";
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
       }
-
-      navigate('/confirmation', {
-        state: {
-          paiement: data,
-          reservation,
-        },
-        replace: true,
-      });
-    } catch (error) {
-      console.error('Erreur de paiement:', error);
-      const message = axios.isAxiosError(error)
-        ? error.response?.data?.message || error.message
-        : (error as Error).message;
 
       toast({
         title: "Échec du paiement",
-        description: message,
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {
@@ -142,74 +154,60 @@ export default function PaiementPage() {
     );
   }
 
-  return (
-    <div className="container mx-auto px-4 py-8 max-w-6xl animate-fade-in">
-      <div className="mb-6">
-        <Button variant="ghost" onClick={() => navigate(-1)} className="flex items-center gap-2">
-          <svg 
-            xmlns="http://www.w3.org/2000/svg" 
-            width="20" 
-            height="20" 
-            viewBox="0 0 24 24" 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="2" 
-            strokeLinecap="round" 
-            strokeLinejoin="round"
+  if (paymentSuccess && paymentDetails) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-4xl">
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <div className="text-center mb-6">
+            <Ticket className="w-12 h-12 mx-auto text-green-500" />
+            <h1 className="text-2xl font-bold mt-4">Paiement confirmé</h1>
+            <p className="text-gray-600 mt-2">Votre transaction a été effectuée avec succès</p>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-6 mb-8">
+            <div className="border rounded-lg p-4">
+              <h2 className="font-semibold mb-3">Détails du trajet</h2>
+              <p>{reservation.origin} → {reservation.destination}</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {format(reservation.date, 'PPPP', { locale: fr })}
+              </p>
+            </div>
+
+            <div className="border rounded-lg p-4">
+              <h2 className="font-semibold mb-3">Détails de paiement</h2>
+              <p>Montant: {formattedTotalPrice} DT</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {paymentMethod === 'credit' ? 'Carte de crédit' : 'Carte de débit'}
+              </p>
+            </div>
+          </div>
+
+          <Button 
+            onClick={() => navigate('/')}
+            className="w-full"
           >
-            <path d="m15 18-6-6 6-6" />
-          </svg>
-          Retour
-        </Button>
+            Retour à l'accueil
+          </Button>
+        </div>
       </div>
+    );
+  }
 
+  return (
+    <div className="container mx-auto px-4 py-8 max-w-6xl">
       <div className="grid md:grid-cols-2 gap-8">
-        {/* Formulaire de paiement */}
-        <div className="bg-white rounded-xl shadow-md overflow-hidden">
-          <div className="px-6 py-8">
-            <h2 className="text-2xl font-bold mb-6">Paiement sécurisé</h2>
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h1 className="text-2xl font-bold mb-6">Paiement sécurisé</h1>
 
-            <form onSubmit={handleSubmit} className="space-y-6">
-              {/* Résumé du trajet */}
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <h2 className="font-semibold text-lg mb-3">Informations de paiement</h2>
+              
               <div className="space-y-4">
-                <h3 className="font-semibold text-lg">Votre trajet</h3>
-                <div className="border border-gray-200 rounded-lg p-4">
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium">{reservation.origin} → {reservation.destination}</span>
-                    <span className="text-blue-600 font-bold">{reservation.price} DT</span>
-                  </div>
-                  <div className="flex items-center gap-2 mt-2 text-sm text-gray-500">
-                    <Calendar size={16} />
-                    {format(reservation.date, 'PPPP', { locale: fr })}
-                  </div>
-                  <div className="mt-2 text-sm">{reservation.seats} {reservation.seats > 1 ? 'places' : 'place'}</div>
-                </div>
-              </div>
-
-              {/* Moyen de paiement */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg">Moyen de paiement</h3>
-                <RadioGroup value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as 'credit' | 'debit')} className="space-y-3">
-                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3 hover:border-blue-500">
-                    <RadioGroupItem value="credit" id="credit" />
-                    <Label htmlFor="credit" className="flex-1 cursor-pointer">Carte de crédit</Label>
-                  </div>
-                  <div className="flex items-center space-x-3 border border-gray-200 rounded-md p-3 hover:border-blue-500">
-                    <RadioGroupItem value="debit" id="debit" />
-                    <Label htmlFor="debit" className="flex-1 cursor-pointer">Carte de débit</Label>
-                  </div>
-                </RadioGroup>
-              </div>
-
-              {/* Informations de paiement */}
-              <div className="space-y-4">
-                <h3 className="font-semibold text-lg">Informations de paiement</h3>
-
                 <div>
                   <Label htmlFor="cardHolder">Nom sur la carte</Label>
                   <Input
                     id="cardHolder"
-                    placeholder="John Doe"
                     value={cardHolder}
                     onChange={(e) => setCardHolder(e.target.value)}
                     required
@@ -220,7 +218,6 @@ export default function PaiementPage() {
                   <Label htmlFor="cardNumber">Numéro de carte</Label>
                   <Input
                     id="cardNumber"
-                    placeholder="1234 5678 9012 3456"
                     value={formatCardNumber(cardNumber)}
                     onChange={(e) => setCardNumber(e.target.value)}
                     maxLength={19}
@@ -230,10 +227,9 @@ export default function PaiementPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="expiryDate">Date d'expiration (MM/AA)</Label>
+                    <Label htmlFor="expiryDate">Expiration (MM/AA)</Label>
                     <Input
                       id="expiryDate"
-                      placeholder="MM/AA"
                       value={formatExpiryDate(expiryDate)}
                       onChange={(e) => setExpiryDate(e.target.value)}
                       maxLength={5}
@@ -241,10 +237,9 @@ export default function PaiementPage() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="cvc">CVC</Label>
+                    <Label htmlFor="cvc">Code CVC</Label>
                     <Input
                       id="cvc"
-                      placeholder="123"
                       value={cvc}
                       onChange={(e) => setCvc(e.target.value.replace(/\D/g, '').slice(0, 3))}
                       maxLength={3}
@@ -253,43 +248,95 @@ export default function PaiementPage() {
                   </div>
                 </div>
               </div>
+            </div>
 
-              <Button type="submit" className="w-full h-12 text-lg" disabled={isLoading}>
-                {isLoading ? (
-                  <>
-                    <Loader2 className="animate-spin mr-2 h-5 w-5" />
-                    Traitement en cours...
-                  </>
-                ) : (
-                  `Payer ${totalPrice.toLocaleString('fr-TN')} DT`
-                )}
-              </Button>
-            </form>
-          </div>
+            <div>
+              <h2 className="font-semibold text-lg mb-3">Coordonnées</h2>
+              <div>
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <h2 className="font-semibold text-lg mb-3">Méthode de paiement</h2>
+              <RadioGroup 
+                value={paymentMethod} 
+                onValueChange={(value) => setPaymentMethod(value as 'credit' | 'debit')}
+                className="grid grid-cols-2 gap-4"
+              >
+                <div className="flex items-center space-x-2 border rounded-md p-4">
+                  <RadioGroupItem value="credit" id="credit" />
+                  <Label htmlFor="credit">Carte de crédit</Label>
+                </div>
+                <div className="flex items-center space-x-2 border rounded-md p-4">
+                  <RadioGroupItem value="debit" id="debit" />
+                  <Label htmlFor="debit">Carte de débit</Label>
+                </div>
+              </RadioGroup>
+            </div>
+
+            <Button 
+              type="submit" 
+              className="w-full py-6 text-lg"
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <Loader2 className="animate-spin mr-2 h-5 w-5" />
+              ) : (
+                `Payer ${formattedTotalPrice} DT`
+              )}
+            </Button>
+          </form>
         </div>
 
-        {/* Récapitulatif */}
-        <div className="bg-white rounded-xl shadow-md overflow-hidden h-fit sticky top-8">
-          <div className="px-6 py-8">
-            <h2 className="text-2xl font-bold mb-6">Récapitulatif</h2>
-            <div className="space-y-6">
-              <div className="flex justify-between">
-                <span>Prix du trajet</span>
-                <span>{reservation.price} DT</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Frais de service</span>
-                <span>{serviceCharge} DT</span>
-              </div>
-              <hr />
-              <div className="flex justify-between font-bold">
-                <span>Total</span>
-                <span>{totalPrice} DT</span>
-              </div>
+        <div className="bg-white rounded-lg shadow-md p-6 h-fit sticky top-8">
+          <h2 className="text-xl font-bold mb-6">Récapitulatif</h2>
+          
+          <div className="space-y-4">
+            <div className="flex justify-between">
+              <span>Trajet</span>
+              <span className="font-medium">
+                {reservation.origin} → {reservation.destination}
+              </span>
+            </div>
+
+            <div className="flex justify-between">
+              <span>Date</span>
+              <span>{format(reservation.date, 'PP', { locale: fr })}</span>
+            </div>
+
+            <div className="flex justify-between">
+              <span>Places</span>
+              <span>{reservation.seats}</span>
+            </div>
+
+            <hr className="my-2" />
+
+            <div className="flex justify-between">
+              <span>Prix du trajet</span>
+              <span>{formattedReservationPrice} DT</span>
+            </div>
+
+            <div className="flex justify-between">
+              <span>Frais de service</span>
+              <span>{serviceCharge.toFixed(2)} DT</span>
+            </div>
+
+            <hr className="my-2 border-t-2" />
+
+            <div className="flex justify-between text-lg font-bold">
+              <span>Total</span>
+              <span>{formattedTotalPrice} DT</span>
             </div>
           </div>
         </div>
-
       </div>
     </div>
   );
