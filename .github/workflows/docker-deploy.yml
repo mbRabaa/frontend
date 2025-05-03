@@ -154,13 +154,14 @@ jobs:
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: 🛠️ Configurer Buildx
         uses: docker/setup-buildx-action@v2
         with:
           driver: docker-container
           install: true
+          buildkitd-flags: --debug
 
       - name: 🔑 Connexion à Docker Hub
         uses: docker/login-action@v2
@@ -174,22 +175,39 @@ jobs:
           name: react-build
           path: dist/
 
-      - name: 🐳 Construire et pousser
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:latest
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-          cache-from: |
-            type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }}
-          cache-to: |
-            type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max
-          platforms: linux/amd64
-          build-args: |
-            NODE_ENV=production
+      - name: 🐳 Construire l'image
+        run: |
+          docker buildx build \
+            --tag ${{ env.DOCKER_IMAGE }}:latest \
+            --tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} \
+            --cache-from type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }} \
+            --output type=docker \
+            --platform linux/amd64 \
+            --build-arg NODE_ENV=production \
+            .
+
+      - name: 🚀 Pousser l'image (avec retry)
+        run: |
+          for attempt in {1..3}; do
+            echo "Tentative de push $attempt/3"
+            if docker push ${{ env.DOCKER_IMAGE }}:latest && docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}; then
+              echo "✅ Push réussi"
+              exit 0
+            fi
+            echo "⚠️ Échec du push, tentative $attempt/3"
+            sleep $((attempt * 10))
+          done
+          echo "❌ Échec après 3 tentatives"
+          exit 1
+
+      - name: 💾 Mettre à jour le cache
+        run: |
+          docker buildx build \
+            --push \
+            --cache-to type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max \
+            --platform linux/amd64 \
+            --target=buildcache \
+            .
 
   deploy-docker:
     needs: build-and-push
