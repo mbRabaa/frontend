@@ -98,14 +98,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 🐳 Démarrer SonarQube (avec persistance)
+      - name: 🐳 Gérer le conteneur SonarQube
         run: |
-          if ! docker volume inspect sonarqube_data >/dev/null 2>&1; then
-            docker volume create sonarqube_data
-            docker volume create sonarqube_extensions
-            docker volume create sonarqube_logs
-          fi
+          # Arrêter et supprimer le conteneur existant
+          docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+          docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
           
+          # Créer les volumes s'ils n'existent pas
+          docker volume create sonarqube_data || true
+          docker volume create sonarqube_extensions || true
+          docker volume create sonarqube_logs || true
+          
+          # Démarrer SonarQube
           docker run -d \
             --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
             -p ${{ env.SONARQUBE_PORT }}:9000 \
@@ -115,14 +119,18 @@ jobs:
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:${{ env.SONARQUBE_VERSION }}
 
-          # Attendre que SonarQube soit opérationnel
+      - name: ⏳ Attendre que SonarQube soit prêt
+        run: |
           for i in {1..30}; do
             if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
-              echo "✅ SonarQube est prêt!"
-              break
+              echo "✅ SonarQube est opérationnel!"
+              exit 0
             fi
+            echo "⌛ Tentative $i/30 - En attente du démarrage de SonarQube..."
             sleep 10
           done
+          echo "❌ SonarQube n'a pas démarré dans le délai imparti"
+          exit 1
 
       - name: 🔍 Exécuter l'analyse SonarQube
         run: |
@@ -198,10 +206,11 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: 🧹 Nettoyage
+      - name: � Nettoyage
         run: |
           docker stop ${{ env.CONTAINER_NAME }} || true
           docker rm -f ${{ env.CONTAINER_NAME }} || true
+          
       - name: 🚀 Déployer
         run: |
           docker pull ${{ env.DOCKER_IMAGE }}:latest
@@ -211,6 +220,7 @@ jobs:
             --restart unless-stopped \
             -e NODE_ENV=production \
             ${{ env.DOCKER_IMAGE }}:latest
+
       - name: ✅ Vérification
         run: |
           sleep 15
@@ -225,9 +235,9 @@ jobs:
       - name: Checkout du code
         uses: actions/checkout@v3
 
-      - name: Préparer l'environnement K3s
+      - name: 🛠️ Préparer l'environnement K3s
         run: |
-          # Arrêter et désinstaller K3s proprement
+          # Arrêter et désinstaller K3s
           sudo /usr/local/bin/k3s-uninstall.sh || true
           sudo /usr/local/bin/k3s-killall.sh || true
           
@@ -237,22 +247,20 @@ jobs:
           sudo rm -rf /var/lib/cni/
           sudo rm -rf /etc/cni/net.d/*
           
-          # Installer les dépendances réseau
+          # Configurer le réseau
           sudo modprobe overlay
           sudo modprobe br_netfilter
-          
-          # Configurer sysctl
           echo -e "net.bridge.bridge-nf-call-iptables=1\nnet.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/k8s.conf
           sudo sysctl --system
           
-          # Réinstaller K3s
+          # Installer K3s
           curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ env.K3S_VERSION }} sh -s - \
             --write-kubeconfig-mode 644 \
             --disable traefik \
             --node-ip $(hostname -I | awk '{print $1}') \
             --docker
-          
-          # Vérifier que K3s est bien démarré
+
+          # Vérifier le démarrage
           for i in {1..30}; do
             if sudo systemctl is-active --quiet k3s; then
               echo "✅ K3s est actif"
@@ -266,7 +274,7 @@ jobs:
           kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
           kubectl patch deployment metrics-server -n kube-system --type 'json' -p '[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
 
-      - name: Configurer kubectl
+      - name: ⚙️ Configurer kubectl
         run: |
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
@@ -278,14 +286,14 @@ jobs:
           kubectl cluster-info
           kubectl get nodes -o wide
 
-      - name: Nettoyer l'ancien déploiement
+      - name: 🧹 Nettoyer l'ancien déploiement
         run: |
           kubectl delete all -l app=frontend -n frontend --ignore-not-found || true
           kubectl delete pvc -l app=frontend -n frontend --ignore-not-found || true
           kubectl delete namespace frontend --ignore-not-found || true
           sleep 15
 
-      - name: Déployer l'application
+      - name: 🚀 Déployer l'application
         run: |
           # Créer le namespace
           kubectl create namespace frontend || true
@@ -301,9 +309,9 @@ jobs:
           
           kubectl apply -f k8s/
 
-      - name: Vérifier le déploiement
+      - name: 🔍 Vérifier le déploiement
         run: |
-          # Attendre avec vérification active
+          # Attendre que les pods soient prêts
           for i in {1..30}; do
             READY=$(kubectl get pods -n frontend -o jsonpath='{.items[*].status.containerStatuses[?(@.ready==true)].name}' | wc -w)
             if [ "$READY" -eq 1 ]; then
@@ -312,7 +320,6 @@ jobs:
             fi
             echo "⌛ Tentative $i/30 - En attente que les conteneurs démarrent..."
             kubectl get pods -n frontend -o wide
-            kubectl describe pods -n frontend
             sleep 10
           done
           
@@ -323,11 +330,10 @@ jobs:
           fi
           
           echo "=== État final ==="
-          kubectl get pods -n frontend -o wide
-          kubectl get svc -n frontend -o wide
+          kubectl get pods,svc -n frontend -o wide
           echo "Application accessible sur: http://$(hostname -I | awk '{print $1}'):${{ env.NODE_PORT }}"
 
-      - name: 🐳 Déployer et configurer Portainer
+      - name: 🐳 Déployer Portainer
         run: |
           # Nettoyer l'instance existante
           docker stop portainer || true
@@ -344,46 +350,12 @@ jobs:
             --restart unless-stopped \
             portainer/portainer-ce:latest
 
-          # Attendre que Portainer soit prêt
-          echo "⏳ Attente du démarrage de Portainer..."
-          until curl -sSf http://localhost:${{ env.PORTAINER_PORT }}/api/system/status | grep -q '"status":"OK"'; do
-            sleep 5
-          done
-          
-          # Créer l'utilisateur admin
-          echo "🛠️ Création de l'utilisateur admin..."
+          # Configurer Portainer
+          echo "⏳ Configuration de Portainer..."
+          sleep 30
           curl -X POST "http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init" \
             -H "Content-Type: application/json" \
             -d '{"Username": "${{ env.PORTAINER_USER }}", "Password": "${{ env.PORTAINER_PASS }}"}'
           
-          # Obtenir le JWT pour l'authentification
-          echo "🔑 Authentification..."
-          JWT=$(curl -sS -X POST "http://localhost:${{ env.PORTAINER_PORT }}/api/auth" \
-            -H "Content-Type: application/json" \
-            -d '{"Username": "${{ env.PORTAINER_USER }}", "Password": "${{ env.PORTAINER_PASS }}"}' | jq -r '.jwt')
-          
-          # Ajouter l'environnement Docker local
-          echo "🐳 Ajout de l'environnement Docker local..."
-          curl -X POST "http://localhost:${{ env.PORTAINER_PORT }}/api/endpoints" \
-            -H "Authorization: Bearer $JWT" \
-            -H "Content-Type: application/json" \
-            -d '{"Name": "Local Docker", "EndpointCreationType": 1}'
-          
-          # Ajouter l'environnement K3s
-          echo "☸️ Ajout de l'environnement K3s..."
-          K3S_CONFIG=$(cat ~/.kube/config | base64 -w0)
-          curl -X POST "http://localhost:${{ env.PORTAINER_PORT }}/api/endpoints" \
-            -H "Authorization: Bearer $JWT" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "Name": "K3s Cluster",
-              "EndpointCreationType": 4,
-              "KubernetesConfiguration": {
-                "KubeConfig": "'"$K3S_CONFIG"'"
-              }
-            }'
-          
-          echo "✅ Portainer configuré avec succès!"
+          echo "✅ Portainer configuré!"
           echo "🔗 Accès: http://$(hostname -I | awk '{print $1}'):${{ env.PORTAINER_PORT }}"
-          echo "👤 Utilisateur: ${{ env.PORTAINER_USER }}"
-          echo "🔒 Mot de passe: ${{ env.PORTAINER_PASS }}"
