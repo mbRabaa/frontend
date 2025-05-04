@@ -12,17 +12,16 @@ env:
   NODE_PORT: 30080
   
   # Configuration Docker
-  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/frontend
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/front_end  # Modification ici
   CONTAINER_NAME: frontend-prod
   PORT: 80
-  CACHE_TAG: buildcache
-  DOCKER_BUILDKIT: 1  # Activation de BuildKit
+  DOCKER_BUILDKIT: 1
   
   # Configuration SonarQube
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
-  SONAR_PROJECT_KEY: frontend
-  SONAR_PROJECT_NAME: "Frontend"
+  SONAR_PROJECT_KEY: front_end  # Modification cohérente
+  SONAR_PROJECT_NAME: "Front End"  # Nom plus lisible
   SONARQUBE_VERSION: 9.9.4-community
   
   # Configuration Portainer
@@ -56,9 +55,9 @@ jobs:
         run: |
           npm run build
           npm run test:coverage
-          echo "👉 Build généré dans dist/:"
+          echo "Build généré dans dist/:"
           ls -lh dist/
-          echo "👉 Rapport de couverture dans coverage/:"
+          echo "Rapport de couverture dans coverage/:"
           ls -lh coverage/
           
       - name: 📦 Sauvegarder le build
@@ -103,217 +102,163 @@ jobs:
 
       - name: 🐳 Démarrer SonarQube
         run: |
-          docker stop ${{ env.SONARQUBE_CONTAINER_NAME }} || true
-          docker rm -f ${{ env.SONARQUBE_CONTAINER_NAME }} || true
+          docker stop $SONARQUBE_CONTAINER_NAME || true
+          docker rm -f $SONARQUBE_CONTAINER_NAME || true
           docker volume create sonarqube_data || true
           docker volume create sonarqube_extensions || true
           docker volume create sonarqube_logs || true
           
           docker run -d \
-            --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
-            -p ${{ env.SONARQUBE_PORT }}:9000 \
+            --name $SONARQUBE_CONTAINER_NAME \
+            -p $SONARQUBE_PORT:9000 \
             -v sonarqube_data:/opt/sonarqube/data \
             -v sonarqube_extensions:/opt/sonarqube/extensions \
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
-            sonarqube:${{ env.SONARQUBE_VERSION }}
+            sonarqube:$SONARQUBE_VERSION
 
-          # Attendre que SonarQube soit prêt
+          # Attente de la disponibilité
           for i in {1..30}; do
-            if curl -sSf http://localhost:${{ env.SONARQUBE_PORT }}/api/system/status | grep -q "\"status\":\"UP\""; then
-              echo "✅ SonarQube est prêt!"
+            if curl -sSf http://localhost:$SONARQUBE_PORT/api/system/status | grep -q '"status":"UP"'; then
+              echo "SonarQube prêt!"
               break
             fi
             sleep 10
           done
 
-      - name: 🔍 Exécuter l'analyse SonarQube
+      - name: 🔍 Analyse SonarQube
         run: |
           HOST_IP=$(hostname -I | awk '{print $1}')
-          echo "🔄 Utilisation de l'IP de l'hôte: $HOST_IP"
-          
           docker run --rm \
             --network host \
-            -e SONAR_HOST_URL="http://$HOST_IP:${{ env.SONARQUBE_PORT }}" \
+            -e SONAR_HOST_URL="http://$HOST_IP:$SONARQUBE_PORT" \
             -e SONAR_TOKEN="${{ secrets.SONARQUBE_TOKEN }}" \
             -v "$(pwd):/usr/src" \
             sonarsource/sonar-scanner-cli:latest \
-            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }} \
-            -Dsonar.projectName="${{ env.SONAR_PROJECT_NAME }}" \
+            -Dsonar.projectKey=$SONAR_PROJECT_KEY \
+            -Dsonar.projectName="$SONAR_PROJECT_NAME" \
             -Dsonar.sources=src \
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
             -Dsonar.exclusions=**/node_modules/**,**/*.test.js \
             -Dsonar.sourceEncoding=UTF-8 \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.qualitygate.wait=true
 
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
-      - name: 🛠️ Configurer Buildx
-        uses: docker/setup-buildx-action@v2
-        with:
-          driver: docker-container
-          install: true
+      - name: 🔑 Authentification Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
-      - name: 🔑 Connexion à Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
-
-      - name: 📥 Récupérer le build
+      - name: 📥 Récupérer l'artefact
         uses: actions/download-artifact@v4
         with:
           name: react-build
           path: dist/
 
-      - name: 🐳 Construire et pousser
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:latest
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-          cache-from: |
-            type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }}
-          cache-to: |
-            type=registry,ref=${{ env.DOCKER_IMAGE }}:${{ env.CACHE_TAG }},mode=max
-          platforms: linux/amd64
-          build-args: |
-            NODE_ENV=production
+      - name: 🐳 Build et Push Docker
+        run: |
+          docker build \
+            -t $DOCKER_IMAGE:latest \
+            -t $DOCKER_IMAGE:$GITHUB_SHA \
+            .
+          
+          docker push $DOCKER_IMAGE:latest
+          docker push $DOCKER_IMAGE:$GITHUB_SHA
 
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
     timeout-minutes: 20
     steps:
-      - name: 🔑 Connexion Docker
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: 🔑 Authentification Docker
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
       - name: 🧹 Nettoyage
         run: |
-          docker stop ${{ env.CONTAINER_NAME }} || true
-          docker rm -f ${{ env.CONTAINER_NAME }} || true
+          docker stop $CONTAINER_NAME || true
+          docker rm -f $CONTAINER_NAME || true
 
-      - name: 🚀 Déployer
+      - name: 🚀 Déploiement
         run: |
-          docker pull ${{ env.DOCKER_IMAGE }}:latest
+          docker pull $DOCKER_IMAGE:latest
           docker run -d \
-            --name ${{ env.CONTAINER_NAME }} \
-            -p ${{ env.PORT }}:80 \
+            --name $CONTAINER_NAME \
+            -p $PORT:80 \
             --restart unless-stopped \
             -e NODE_ENV=production \
-            ${{ env.DOCKER_IMAGE }}:latest
+            $DOCKER_IMAGE:latest
 
       - name: ✅ Vérification
         run: |
           sleep 15
-          curl -sSf http://localhost:${{ env.PORT }}/ || exit 1
-          echo "🚀 Déploiement Docker réussi!"
+          curl -sSf http://localhost:$PORT/ || exit 1
+          echo "Déploiement Docker réussi!"
 
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
-      - name: Checkout du code
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Préparer l'environnement K3s
+      - name: 🛠️ Configuration K3s
         run: |
-          sudo /usr/local/bin/k3s-uninstall.sh || true
-          sudo /usr/local/bin/k3s-killall.sh || true
+          # Nettoyage
+          sudo k3s-uninstall.sh || true
+          sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/cni /etc/cni/net.d/*
           
-          sudo rm -rf /etc/rancher/k3s/
-          sudo rm -rf /var/lib/rancher/k3s/
-          sudo rm -rf /var/lib/cni/
-          sudo rm -rf /etc/cni/net.d/*
-          
-          sudo modprobe overlay
-          sudo modprobe br_netfilter
-          
-          echo -e "net.bridge.bridge-nf-call-iptables=1\nnet.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/k8s.conf
-          sudo sysctl --system
-          
-          curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${{ env.K3S_VERSION }} sh -s - \
+          # Installation
+          curl -sfL https://get.k3s.io | \
+            INSTALL_K3S_VERSION=$K3S_VERSION \
+            sh -s - \
             --write-kubeconfig-mode 644 \
             --disable traefik \
             --node-ip $(hostname -I | awk '{print $1}') \
             --docker
-          
-          for i in {1..30}; do
-            if sudo systemctl is-active --quiet k3s; then
-              echo "✅ K3s est actif"
-              break
-            fi
-            sleep 10
-          done
-          
-          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-          kubectl patch deployment metrics-server -n kube-system --type 'json' -p '[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
 
-      - name: Configurer kubectl
-        run: |
+          # Configuration kubectl
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sudo chmod 600 ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-          
-          kubectl cluster-info
-          kubectl get nodes -o wide
 
-      - name: Déployer l'application
+      - name: 🚀 Déploiement K8s
         run: |
           kubectl create namespace frontend || true
           
-          # Utilisation d'envsubst pour le templating
-          export DOCKER_IMAGE=${{ env.DOCKER_IMAGE }}
-          export TAG=${{ github.sha }}
-          export NODE_PORT=${{ env.NODE_PORT }}
-          envsubst < k8s/deployment.yaml | kubectl apply -f -
-          envsubst < k8s/service.yaml | kubectl apply -f -
+          # Templating avec les variables d'environnement
+          envsubst < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
+          envsubst < $K8S_FRONTEND_PATH/service.yaml | kubectl apply -f -
 
-      - name: Vérifier le déploiement
+      - name: ✅ Vérification
         run: |
-          for i in {1..30}; do
-            READY=$(kubectl get pods -n frontend -o jsonpath='{.items[*].status.containerStatuses[?(@.ready==true)].name}' | wc -w)
-            if [ "$READY" -eq 1 ]; then
-              echo "✅ Tous les conteneurs sont prêts!"
-              break
-            fi
-            sleep 10
-          done
+          kubectl wait --for=condition=available \
+            --timeout=300s \
+            -n frontend \
+            deployment/frontend-deployment
           
-          kubectl get pods,svc -n frontend -o wide
-          echo "Application accessible sur: http://$(hostname -I | awk '{print $1}'):${{ env.NODE_PORT }}"
+          echo "Application disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
 
-      - name: 🐳 Déployer Portainer
+      - name: 🐳 Portainer
         run: |
-          docker stop portainer || true
-          docker rm -f portainer || true
-          docker volume create portainer_data || true
-          
           docker run -d \
             --name portainer \
-            -p ${{ env.PORTAINER_PORT }}:9000 \
-            -p ${{ env.PORTAINER_HTTPS_PORT }}:9443 \
+            -p $PORTAINER_PORT:9000 \
+            -p $PORTAINER_HTTPS_PORT:9443 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v portainer_data:/data \
             --restart unless-stopped \
             portainer/portainer-ce:latest
-
-          sleep 30
-          curl -X POST "http://localhost:${{ env.PORTAINER_PORT }}/api/users/admin/init" \
-            -H "Content-Type: application/json" \
-            -d '{"Username": "${{ env.PORTAINER_USER }}", "Password": "${{ env.PORTAINER_PASS }}"}'
           
-          echo "✅ Portainer configuré: http://$(hostname -I | awk '{print $1}'):${{ env.PORTAINER_PORT }}"
+          echo "Portainer disponible sur: http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
+          sleep 30
+
+          curl -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
+            -H "Content-Type: application/json" \
+            -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}'
+
+          echo "Portainer ready at http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
