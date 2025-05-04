@@ -1,4 +1,4 @@
-name: Chaine CI/CD - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
+name:  CI/CD - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
 
 on:
   push:
