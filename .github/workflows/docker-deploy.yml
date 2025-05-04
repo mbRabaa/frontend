@@ -252,8 +252,11 @@ jobs:
 
       - name: 🐳 Déployer Portainer
         run: |
-          docker stop $CONTAINER_NAME || true
-          docker rm -f $CONTAINER_NAME || true
+          # Arrêter et supprimer le conteneur existant s'il existe
+          docker stop portainer || true
+          docker rm -f portainer || true
+          
+          # Démarrer un nouveau conteneur Portainer
 
           docker run -d \
             --name portainer \
