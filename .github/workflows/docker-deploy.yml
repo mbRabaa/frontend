@@ -203,85 +203,55 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-        
-      - name: 🛠️ Configuration K3s (avec logging amélioré)
+      
+      - name: 🛠️ Configuration K3s
         run: |
-          set -x  # Active le mode debug
-          echo "### Nettoyage de l'ancienne installation ###"
-          sudo k3s-uninstall.sh || echo "Aucune installation existante à désinstaller"
-          sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/cni /etc/cni/net.d/* || true
+          set -x
+          # Nettoyage
+          sudo k3s-uninstall.sh || true
+          sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/cni /etc/cni/net.d/*
           
-          echo "### Installation de K3s ###"
-          curl -v -sfL https://get.k3s.io | \
+          # Installation
+          curl -sfL https://get.k3s.io | \
             INSTALL_K3S_VERSION=$K3S_VERSION \
             sh -s - \
             --write-kubeconfig-mode 644 \
             --disable traefik \
             --node-ip $(hostname -I | awk '{print $1}') \
-            --docker | tee k3s_install.log
-
-          echo "### Vérification de l'installation ###"
-          sudo systemctl status k3s --no-pager || true
-          journalctl -u k3s -n 50 --no-pager || true
-          cat /var/log/syslog | grep k3s | tail -50 || true
+            --docker
 
       - name: 🔧 Configuration kubectl
         run: |
-          set -x
-          echo "### Configuration de l'accès kubectl ###"
           mkdir -p ~/.kube
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sudo chmod 600 ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
           
-          echo "### Vérification cluster ###"
           kubectl cluster-info
           kubectl get nodes -o wide
-          kubectl api-resources
 
-      - name: 🚀 Déploiement K8s (avec logging étendu)
+      - name: 🚀 Déploiement K8s
         run: |
-          set -x
-          echo "### Création namespace ###"
-          kubectl create namespace frontend || kubectl get namespace frontend -o yaml
+          # Appliquer le namespace
+          kubectl apply -f $K8S_FRONTEND_PATH/namespace.yaml
           
-          echo "### Contenu des fichiers de déploiement ###"
-          echo "=== deployment.yaml ==="
-          cat $K8S_FRONTEND_PATH/deployment.yaml || true
-          echo "=== service.yaml ==="
-          cat $K8S_FRONTEND_PATH/service.yaml || true
+          # Exporter les variables pour envsubst
+          export DOCKER_IMAGE=$DOCKER_IMAGE
+          export TAG=$GITHUB_SHA
           
-          echo "### Application des manifests ###"
-          envsubst < $K8S_FRONTEND_PATH/deployment.yaml > processed_deployment.yaml
-          envsubst < $K8S_FRONTEND_PATH/service.yaml > processed_service.yaml
-          
-          echo "=== Fichiers traités ==="
-          cat processed_deployment.yaml
-          cat processed_service.yaml
-          
-          kubectl apply -f processed_deployment.yaml
-          kubectl apply -f processed_service.yaml
+          # Traiter et appliquer les manifests
+          envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
+          kubectl apply -f $K8S_FRONTEND_PATH/service.yaml
 
-      - name: 🔍 Vérification approfondie
+      - name: 🔍 Vérification
         run: |
-          set -x
-          echo "### État du déploiement ###"
-          kubectl get all -n frontend -o wide
-          kubectl describe deployment -n frontend
-          kubectl get events -n frontend --sort-by='.metadata.creationTimestamp'
-          
-          echo "### Logs des pods ###"
-          kubectl get pods -n frontend -o name | xargs -I {} kubectl logs {} -n frontend --all-containers=true
-          
-          echo "### Vérification de la santé ###"
-          timeout 60 bash -c 'while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' http://$(hostname -I | awk '\''{print $1}'\''):$NODE_PORT)" != "200" ]]; do sleep 5; done' || true
-          curl -v http://$(hostname -I | awk '{print $1}'):$NODE_PORT
+          kubectl wait --for=condition=available deployment/frontend-deployment -n frontend --timeout=300s
+          kubectl get pods,svc -n frontend -o wide
+          echo "Application disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
 
-      - name: 🐳 Portainer (avec gestion d'erreur)
+      - name: 🐳 Déployer Portainer
         run: |
-          set -x
-          echo "### Déploiement de Portainer ###"
           docker run -d \
             --name portainer \
             -p $PORTAINER_PORT:9000 \
@@ -289,15 +259,10 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v portainer_data:/data \
             --restart unless-stopped \
-            portainer/portainer-ce:latest || true
+            portainer/portainer-ce:latest
           
-          echo "### Attente du démarrage ###"
           sleep 30
-          
-          echo "### Initialisation de Portainer ###"
-          curl -v -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
+          curl -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
             -H "Content-Type: application/json" \
-            -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}' || true
-          
-          echo "### URL d'accès ###"
-          echo "Portainer: http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
+            -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}'
+          echo "Portainer disponible sur: http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"

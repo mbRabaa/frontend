@@ -7,7 +7,7 @@ metadata:
     app: frontend
 spec:
   replicas: 3
-  revisionHistoryLimit: 3  # Limite le nombre de revisions conservées
+  revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -23,8 +23,8 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: $DOCKER_IMAGE:$TAG
-        imagePullPolicy: IfNotPresent  # Changé pour optimiser les pulls
+        image: ${DOCKER_IMAGE}:${TAG}
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
           name: http
@@ -42,9 +42,9 @@ spec:
         livenessProbe:
           httpGet:
             path: /
-            port: http  # Référence au port nommé
+            port: http
             scheme: HTTP
-          initialDelaySeconds: 30  # Délai réduit mais suffisant
+          initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           successThreshold: 1
@@ -54,15 +54,15 @@ spec:
             path: /
             port: http
             scheme: HTTP
-          initialDelaySeconds: 5  # Délai plus court pour readiness
+          initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3
           successThreshold: 1
           failureThreshold: 3
-        startupProbe:  # Ajout d'une startupProbe
+        startupProbe:
           httpGet:
             path: /
             port: http
             scheme: HTTP
-          failureThreshold: 30  # Nombre élevé pour les apps qui démarrent lentement
+          failureThreshold: 30
           periodSeconds: 10
