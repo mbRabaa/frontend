@@ -1,4 +1,4 @@
-name: Chaine CI/CD - Build, Test, Analyse SonarQube, Déploiement Docker+K3s
+name: Chaine CI/CD Complète avec Rollback Positionné
 
 on:
   push:
@@ -117,7 +117,6 @@ jobs:
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:$SONARQUBE_VERSION
 
-          # Attente de la disponibilité
           for i in {1..30}; do
             if curl -sSf http://localhost:$SONARQUBE_PORT/api/system/status | grep -q '"status":"UP"'; then
               echo "SonarQube prêt!"
@@ -199,7 +198,7 @@ jobs:
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -207,11 +206,9 @@ jobs:
       - name: 🛠️ Configuration K3s
         run: |
           set -x
-          # Nettoyage
           sudo k3s-uninstall.sh || true
           sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/cni /etc/cni/net.d/*
           
-          # Installation
           curl -sfL https://get.k3s.io | \
             INSTALL_K3S_VERSION=$K3S_VERSION \
             sh -s - \
@@ -231,80 +228,95 @@ jobs:
           kubectl cluster-info
           kubectl get nodes -o wide
 
+      - name: 📌 Sauvegarde révision actuelle
+        id: save-revision
+        run: |
+          CURRENT_REVISION=$(kubectl get deployment frontend-deployment -n frontend -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "0")
+          echo "CURRENT_REVISION=$CURRENT_REVISION" >> $GITHUB_ENV
+          echo "Révision actuelle sauvegardée: $CURRENT_REVISION"
+
       - name: 🚀 Déploiement K8s
         run: |
-          # Appliquer le namespace
           kubectl apply -f $K8S_FRONTEND_PATH/namespace.yaml
           
-          # Exporter les variables pour envsubst
           export DOCKER_IMAGE=$DOCKER_IMAGE
           export TAG=$GITHUB_SHA
           
-          # Traiter et appliquer les manifests
           envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
           kubectl apply -f $K8S_FRONTEND_PATH/service.yaml
 
-      - name: 🔍 Vérification
+      - name: 🔍 Vérification déploiement
+        id: verify-deployment
         run: |
-          kubectl wait --for=condition=available deployment/frontend-deployment -n frontend --timeout=300s
-          kubectl get pods,svc -n frontend -o wide
-          echo "Application disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+          if kubectl wait --for=condition=available deployment/frontend-deployment -n frontend --timeout=300s; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            kubectl get pods,svc -n frontend -o wide
+            echo "Application disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "::error::Échec de la vérification du déploiement"
+          fi
 
-      - name: 🐳 Déployer et Configurer Portainer
+      - name: 🔄 Rollback si échec
+        if: steps.verify-deployment.outputs.status == 'failure'
         run: |
-            # Arrêt et nettoyage du conteneur existant
-            docker stop portainer || true
-            docker rm -f portainer || true
-            
-            # Création du conteneur Portainer
-            docker run -d \
-              --name portainer \
-              -p $PORTAINER_PORT:9000 \
-              -p $PORTAINER_HTTPS_PORT:9443 \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v portainer_data:/data \
-              --restart unless-stopped \
-              portainer/portainer-ce:latest
-            
-            # Attente du démarrage
-            sleep 30
-            
-            # Configuration initiale
-            if ! curl -sSf http://localhost:$PORTAINER_PORT/api/users/admin/check >/dev/null; then
-              curl -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
-                -H "Content-Type: application/json" \
-                -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}'
-            fi
-            
-            # Obtenir le token d'authentification
-            AUTH_TOKEN=$(curl -s -X POST "http://localhost:$PORTAINER_PORT/api/auth" \
-              -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}' \
-              | jq -r '.jwt')
-            
-            # Configuration de l'environnement K3s
-            K3S_IP=$(hostname -I | awk '{print $1}')
-            K3S_ENDPOINT="https://$K3S_IP:6443"
-            
-            # Créer la configuration K3s pour Portainer
-            K3S_CONFIG=$(sudo cat /etc/rancher/k3s/k3s.yaml | \
-              sed "s/127.0.0.1/$K3S_IP/g" | \
-              sed "s/default/portainer-k3s/g" | \
-              base64 -w0)
-            
-            # Ajouter le cluster K3s à Portainer
-            curl -X POST "http://localhost:$PORTAINER_PORT/api/endpoints" \
+          echo "::error::Lancement du rollback à la révision ${{ env.CURRENT_REVISION }}"
+          kubectl rollout undo deployment/frontend-deployment -n frontend --to-revision=${{ env.CURRENT_REVISION }}
+          
+          echo "Vérification du rollback..."
+          kubectl rollout status deployment/frontend-deployment -n frontend --timeout=180s
+          
+          echo "État après rollback:"
+          kubectl get pods -n frontend
+          exit 1  # Faire échouer le job car le déploiement initial a échoué
+
+      - name: 🐳 Déploiement Portainer
+        if: steps.verify-deployment.outputs.status == 'success'
+        run: |
+          docker stop portainer || true
+          docker rm -f portainer || true
+          
+          docker run -d \
+            --name portainer \
+            -p $PORTAINER_PORT:9000 \
+            -p $PORTAINER_HTTPS_PORT:9443 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v portainer_data:/data \
+            --restart unless-stopped \
+            portainer/portainer-ce:latest
+          
+          sleep 30
+          
+          if ! curl -sSf http://localhost:$PORTAINER_PORT/api/users/admin/check >/dev/null; then
+            curl -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $AUTH_TOKEN" \
-              -d '{
-                "Name": "K3s Cluster",
-                "URL": "'"$K3S_ENDPOINT"'",
-                "TLS": true,
-                "TLSSkipVerify": true,
-                "Type": 3,
-                "KubernetesConfig": {
-                  "Configuration": "'"$K3S_CONFIG"'",
-                  "UseLoadBalancer": false
-                }
-              }'
-            
+              -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}'
+          fi
+          
+          AUTH_TOKEN=$(curl -s -X POST "http://localhost:$PORTAINER_PORT/api/auth" \
+            -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}' \
+            | jq -r '.jwt')
+          
+          K3S_IP=$(hostname -I | awk '{print $1}')
+          K3S_ENDPOINT="https://$K3S_IP:6443"
+          
+          K3S_CONFIG=$(sudo cat /etc/rancher/k3s/k3s.yaml | \
+            sed "s/127.0.0.1/$K3S_IP/g" | \
+            sed "s/default/portainer-k3s/g" | \
+            base64 -w0)
+          
+          curl -X POST "http://localhost:$PORTAINER_PORT/api/endpoints" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -d '{
+              "Name": "K3s Cluster",
+              "URL": "'"$K3S_ENDPOINT"'",
+              "TLS": true,
+              "TLSSkipVerify": true,
+              "Type": 3,
+              "KubernetesConfig": {
+                "Configuration": "'"$K3S_CONFIG"'",
+                "UseLoadBalancer": false
+              }
+            }'
             echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
