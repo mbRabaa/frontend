@@ -263,29 +263,38 @@ jobs:
               -p $PORTAINER_HTTPS_PORT:9443 \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v portainer_data:/data \
-              -v /etc/rancher/k3s/k3s.yaml:/k3s.yaml \
               --restart unless-stopped \
               portainer/portainer-ce:latest
             
             # Attente du démarrage
             sleep 30
             
-            # Configuration initiale (si nécessaire)
+            # Configuration initiale
             if ! curl -sSf http://localhost:$PORTAINER_PORT/api/users/admin/check >/dev/null; then
               curl -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
                 -H "Content-Type: application/json" \
                 -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}'
             fi
             
-            # Configuration de l'environnement K3s
-            K3S_ENDPOINT="https://$(hostname -I | awk '{print $1}'):6443"
-            K3S_CONFIG=$(cat /etc/rancher/k3s/k3s.yaml | base64 -w0)
+            # Obtenir le token d'authentification
+            AUTH_TOKEN=$(curl -s -X POST "http://localhost:$PORTAINER_PORT/api/auth" \
+              -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}' \
+              | jq -r '.jwt')
             
+            # Configuration de l'environnement K3s
+            K3S_IP=$(hostname -I | awk '{print $1}')
+            K3S_ENDPOINT="https://$K3S_IP:6443"
+            
+            # Créer la configuration K3s pour Portainer
+            K3S_CONFIG=$(sudo cat /etc/rancher/k3s/k3s.yaml | \
+              sed "s/127.0.0.1/$K3S_IP/g" | \
+              sed "s/default/portainer-k3s/g" | \
+              base64 -w0)
+            
+            # Ajouter le cluster K3s à Portainer
             curl -X POST "http://localhost:$PORTAINER_PORT/api/endpoints" \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $(curl -s -X POST "http://localhost:$PORTAINER_PORT/api/auth" \
-                -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}' \
-                | jq -r '.jwt')" \
+              -H "Authorization: Bearer $AUTH_TOKEN" \
               -d '{
                 "Name": "K3s Cluster",
                 "URL": "'"$K3S_ENDPOINT"'",
@@ -298,4 +307,4 @@ jobs:
                 }
               }'
             
-            echo "Portainer configuré avec accès à K3s: http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
+            echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
