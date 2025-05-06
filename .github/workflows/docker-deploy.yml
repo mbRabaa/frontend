@@ -1,4 +1,4 @@
-name:  CI/CD Complète avec Rollback Positionné
+name: Chaine CI/CD Complète avec Rollback Positionné
 
 on:
   push:
@@ -29,11 +29,6 @@ env:
   PORTAINER_PASS: ${{ secrets.PORTAINER_PASSWORD }}
   PORTAINER_PORT: 19000
   PORTAINER_HTTPS_PORT: 19443
-  
-  # Configuration Monitoring
-  GRAFANA_PORT: 30091
-  PROMETHEUS_PORT: 30090
-  ALERTMANAGER_PORT: 30092
 
 jobs:
   build-app:
@@ -273,7 +268,7 @@ jobs:
           
           echo "État après rollback:"
           kubectl get pods -n frontend
-          exit 1
+          exit 1  # Faire échouer le job car le déploiement initial a échoué
 
       - name: 🐳 Déploiement Portainer
         if: steps.verify-deployment.outputs.status == 'success'
@@ -325,7 +320,7 @@ jobs:
               }
             }'
             
-          echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
+            echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
 
   cluster-monitoring:
     needs: deploy-k3s
