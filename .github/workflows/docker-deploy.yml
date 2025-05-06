@@ -30,6 +30,11 @@ env:
   PORTAINER_PORT: 19000
   PORTAINER_HTTPS_PORT: 19443
 
+  # Configuration Monitoring
+  GRAFANA_PORT: 30091
+  PROMETHEUS_PORT: 30090
+  ALERTMANAGER_PORT: 30092
+
 jobs:
   build-app:
     runs-on: self-hosted
@@ -336,26 +341,27 @@ jobs:
 
       - name: ⎈ Installer la stack monitoring
         run: |
-          kubectl create namespace monitoring || true
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-            --namespace monitoring \
-            --set grafana.adminPassword="monitoring" \
-            --set prometheus.service.type=NodePort \
-            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
-            --set grafana.service.type=NodePort \
-            --set grafana.service.nodePort=$GRAFANA_PORT \
-            --set alertmanager.service.type=NodePort \
-            --set alertmanager.service.nodePort=$ALERTMANAGER_PORT
+            kubectl create namespace monitoring || true
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+              --namespace monitoring \
+              --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
+              --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+              --set prometheus.service.type=NodePort \
+              --set prometheus.service.nodePort=$PROMETHEUS_PORT \
+              --set grafana.service.type=NodePort \
+              --set grafana.service.nodePort=$GRAFANA_PORT \
+              --set alertmanager.service.type=NodePort \
+              --set alertmanager.service.nodePort=$ALERTMANAGER_PORT
 
       - name: 🌐 Afficher les accès
         run: |
-          echo "=== MONITORING ==="
-          echo "Grafana       : http://$(hostname -I | awk '{print $1}'):$GRAFANA_PORT"
-          echo "Prometheus    : http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT"
-          echo "AlertManager  : http://$(hostname -I | awk '{print $1}'):$ALERTMANAGER_PORT"
-          echo "-----------------"
-          echo "Identifiants Grafana : admin / monitoring"
-          echo "=== ACCÈS APPLICATION ==="
-          echo "Frontend      : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
-          echo "Portainer     : http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
+                echo "=== MONITORING ==="
+                echo "Grafana       : http://$(hostname -I | awk '{print $1}'):$GRAFANA_PORT"
+                echo "Prometheus    : http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT"
+                echo "AlertManager  : http://$(hostname -I | awk '{print $1}'):$ALERTMANAGER_PORT"
+                echo "-----------------"
+                echo "Identifiants Grafana : Voir les secrets GitHub"
+                echo "=== ACCÈS APPLICATION ==="
+                echo "Frontend      : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+                echo "Portainer     : http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
