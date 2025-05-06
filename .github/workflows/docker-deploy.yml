@@ -1,4 +1,4 @@
-name: Chaine CI/CD Complète avec Rollback Positionné
+name: CI/CD Complète avec Rollback Positionné
 
 on:
   push:
