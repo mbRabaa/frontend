@@ -13,3 +13,6 @@ docker-compose.yml
 **/npm-cache
 **/.npm
 **/yarn-cache
+
+# Dependencies
+node_modules/

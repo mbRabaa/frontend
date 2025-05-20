@@ -3,46 +3,71 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
 
-// Configuration commune
-const commonConfig = {
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
-  },
-  plugins: [
-    react(),
-    process.env.NODE_ENV === 'development' && componentTagger(),
-  ].filter(Boolean),
-};
-
-// Solution 1 : Valeur par défaut explicite
-const API_GATEWAY_URL = process.env.VITE_API_GATEWAY_URL || 'http://localhost:8000';
-
-// Configuration spécifique au mode
 export default defineConfig(({ mode }) => {
   const isTest = mode === 'test';
-  
+  const isDev = mode === 'development';
+
   return {
-    ...commonConfig,
-    server: isTest ? {
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
+    },
+    plugins: [
+      react(),
+      isDev && componentTagger(),
+    ].filter(Boolean),
+    define: {
+      ...(isTest ? {
+        'process.env': {
+          VITE_API_URL: JSON.stringify('http://localhost:8000'),
+          VITE_API_GATEWAY_URL: JSON.stringify('http://localhost:8000'),
+        }
+      } : {})
+    },
+    server: {
       host: "::",
       port: 8080,
-    } : {
-      host: "::",
-      port: 8080,
-      proxy: {
+      proxy: !isTest ? {
         '/api': {
-          target: API_GATEWAY_URL,
+          target: process.env.VITE_API_GATEWAY_URL || 'http://localhost:8000',
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
-      },
+      } : undefined,
     },
-    test: isTest ? {
+    test: {
       globals: true,
       environment: 'jsdom',
-      setupFiles: './src/setupTests.js'
-    } : undefined,
+      setupFiles: './src/setupTests.js',
+      coverage: {
+        provider: 'istanbul',
+        reporter: ['text', 'json', 'html'],
+      },
+      deps: {
+        optimizer: {
+          web: {
+            include: [
+              '@radix-ui/react-.*',
+              'lovable-tagger'
+            ],
+          },
+        },
+      },
+      testTimeout: 15000,
+      environmentOptions: {
+        jsdom: {
+          resources: 'usable',
+        },
+      },
+      silent: false, // Mieux pour le débogage
+    },
+    optimizeDeps: {
+      include: [
+        '@radix-ui/react-dialog',
+        '@radix-ui/react-dropdown-menu',
+        // Ajoutez ici d'autres dépendances Radix que vous utilisez
+      ],
+    },
   };
 });

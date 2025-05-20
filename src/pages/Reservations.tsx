@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Calendar, MapPin } from 'lucide-react';
+import { Calendar, MapPin, Loader2 } from 'lucide-react'; // Ajout de Loader2 ici
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
@@ -29,6 +29,15 @@ const cities = [
 
 const API_GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL + '/api/reservations';
 
+// Fonction pour obtenir le prix selon le trajet (à adapter avec votre API)
+const getPricePerSeat = (origin: string, destination: string): number => {
+  // Exemple de logique de prix - à remplacer par vos règles métiers
+  if (origin === 'Tunis' && destination === 'Sfax') return 30.7;
+  if (origin === 'Tunis' && destination === 'Sousse') return 15.5;
+  // Ajoutez d'autres combinaisons selon vos besoins
+  return 25.0; // Prix par défaut
+};
+
 export default function ReservationPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -38,7 +47,8 @@ export default function ReservationPage() {
   const [destination, setDestination] = useState('');
   const [date, setDate] = useState<Date | undefined>(undefined);
   const [seats, setSeats] = useState('1');
-  const [trajetId, setTrajetId] = useState('1'); // Défaut ou récupéré dynamiquement
+  const [trajetId, setTrajetId] = useState('1');
+  const [isLoading, setIsLoading] = useState(false);
 
   const selectedJourneyId = location.state?.journeyId;
 
@@ -48,7 +58,7 @@ export default function ReservationPage() {
         setOrigin('Tunis');
         setDestination('Sousse');
         setDate(new Date('2025-06-15'));
-        setTrajetId('1'); // Correspond au trajet dans la base
+        setTrajetId('1');
       }
     }
   }, [selectedJourneyId]);
@@ -63,6 +73,7 @@ export default function ReservationPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsLoading(true);
 
     if (!origin || !destination || !date) {
       toast({
@@ -70,26 +81,50 @@ export default function ReservationPage() {
         description: "Veuillez remplir tous les champs obligatoires",
         variant: "destructive",
       });
+      setIsLoading(false);
+      return;
+    }
+
+    const seatsNumber = parseInt(seats);
+    if (isNaN(seatsNumber) || seatsNumber <= 0) {
+      toast({
+        title: "Nombre de places invalide",
+        description: "Veuillez entrer un nombre valide (minimum 1)",
+        variant: "destructive",
+      });
+      setIsLoading(false);
       return;
     }
 
     try {
+      // 1. Créer la réservation côté serveur
       const { data: reservation } = await axios.post(API_GATEWAY_URL, {
-        seats: parseInt(seats),
+        seats: seatsNumber,
         trajet_id: parseInt(trajetId)
       });
 
-      // Ajoute les infos supplémentaires pour l'affichage frontend
+      // 2. Calculer les prix
+      const pricePerSeat = getPricePerSeat(origin, destination);
+      const totalPrice = pricePerSeat * seatsNumber;
+
+      // 3. Préparer les données pour la page de paiement
       const fullReservation = {
         ...reservation,
         origin,
         destination,
         date: date.toISOString(),
-        date_depart: date.toISOString() // Pour compatibilité avec l'existant
+        seats: seatsNumber,
+        price: totalPrice,
+        pricePerSeat
       };
 
+      console.log("Données envoyées au paiement:", fullReservation);
+
+      // 4. Rediriger vers la page de paiement avec toutes les données
       navigate('/paiements', {
-        state: { reservation: fullReservation },
+        state: { 
+          reservation: fullReservation 
+        },
       });
 
     } catch (error: any) {
@@ -99,6 +134,8 @@ export default function ReservationPage() {
         description: error.response?.data?.error || "Impossible de réserver. Veuillez réessayer.",
         variant: "destructive",
       });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -106,7 +143,7 @@ export default function ReservationPage() {
     <div className="container mx-auto px-4 py-8 max-w-4xl animate-fade-in">
       <div className="bg-white rounded-xl shadow-md overflow-hidden">
         <div className="px-6 py-8">
-          <h1 className="text-2xl font-bold text-center mb-8">Formulaire de Réservation</h1>
+          <h1 className="text-2xl font-bold text-center mb-8">Réservez maintenant</h1>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
@@ -190,14 +227,23 @@ export default function ReservationPage() {
                 variant="outline"
                 className="flex-1"
                 onClick={handleCancel}
+                disabled={isLoading}
               >
                 Annuler
               </Button>
               <Button
                 type="submit"
                 className="flex-1 bg-tunisbus-600 hover:bg-tunisbus-700 text-white"
+                disabled={isLoading}
               >
-                Réserver et Payer
+                {isLoading ? (
+                  <>
+                    <Loader2 className="animate-spin mr-2 h-4 w-4" />
+                    Traitement...
+                  </>
+                ) : (
+                  "Réserver et Payer"
+                )}
               </Button>
             </div>
           </form>
