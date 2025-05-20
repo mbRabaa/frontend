@@ -89,12 +89,12 @@ jobs:
       - name: 📦 Installer les dépendances
         run: npm ci --prefer-offline
 
-      - name: 🧪 Exécuter les tests unitaires
+      - name: � Exécuter les tests unitaires
         run: npm test
         env:
           CI: true
           NODE_ENV: test
-          
+
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
@@ -104,6 +104,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Vérifier les fichiers de couverture
+        run: |
+          ls -la coverage/
+          [ -f "coverage/lcov.info" ] || exit 1
 
       - name: 🐳 Démarrer SonarQube
         run: |
@@ -143,9 +148,12 @@ jobs:
             -Dsonar.projectName="$SONAR_PROJECT_NAME" \
             -Dsonar.sources=src \
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
             -Dsonar.exclusions=**/node_modules/**,**/*.test.js \
             -Dsonar.sourceEncoding=UTF-8 \
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.typescript.tsconfigPath=tsconfig.json \
+            -Dsonar.typescript.compilerOptions="{\"moduleResolution\": \"node\"}"
 
   build-and-push:
     needs: sonarqube-analysis
@@ -273,7 +281,7 @@ jobs:
           
           echo "État après rollback:"
           kubectl get pods -n frontend
-          exit 1  # Faire échouer le job car le déploiement initial a échoué
+          exit 1
 
       - name: 🐳 Déploiement Portainer
         if: steps.verify-deployment.outputs.status == 'success'
@@ -325,7 +333,7 @@ jobs:
               }
             }'
             
-            echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
+          echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
 
   cluster-monitoring:
     needs: deploy-k3s
@@ -356,12 +364,12 @@ jobs:
 
       - name: 🌐 Afficher les accès
         run: |
-                echo "=== MONITORING ==="
-                echo "Grafana       : http://$(hostname -I | awk '{print $1}'):$GRAFANA_PORT"
-                echo "Prometheus    : http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT"
-                echo "AlertManager  : http://$(hostname -I | awk '{print $1}'):$ALERTMANAGER_PORT"
-                echo "-----------------"
-                echo "Identifiants Grafana : Voir les secrets GitHub"
-                echo "=== ACCÈS APPLICATION ==="
-                echo "Frontend      : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
-                echo "Portainer     : http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
+          echo "=== MONITORING ==="
+          echo "Grafana       : http://$(hostname -I | awk '{print $1}'):$GRAFANA_PORT"
+          echo "Prometheus    : http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT"
+          echo "AlertManager  : http://$(hostname -I | awk '{print $1}'):$ALERTMANAGER_PORT"
+          echo "-----------------"
+          echo "Identifiants Grafana : Voir les secrets GitHub"
+          echo "=== ACCÈS APPLICATION ==="
+          echo "Frontend      : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+          echo "Portainer     : http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"
