@@ -53,28 +53,17 @@ jobs:
       - name: 📦 Installer les dépendances
         run: |
           npm ci --prefer-offline
-          npm install -D @vitest/coverage-v8 lcov-result-merger
+          npm install -D @vitest/coverage-v8
 
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          
-          # Exécuter les tests avec couverture
-          npm test -- --coverage --coverage.reporter=lcov --coverage.reportsDirectory=./coverage
-          
-          # Vérifier et convertir si nécessaire
-          if [ ! -f "coverage/lcov.info" ] && [ -f "coverage/coverage-final.json" ]; then
-            npx lcov-result-merger 'coverage/coverage-final.json' > 'coverage/lcov.info'
-          fi
-          
-          # Vérification finale
+          npm test -- --coverage --coverage.provider=v8
+          echo "=== Vérification du rapport LCOV ==="
+          [ -f "coverage/lcov.info" ] || exit 1
+          head -n 5 coverage/lcov.info
           echo "Build généré dans dist/:"
           ls -lh dist/
-          echo "Rapport de couverture dans coverage/:"
-          ls -lh coverage/
-          [ -f "coverage/lcov.info" ] || (echo "Erreur: lcov.info non généré" && exit 1)
-          echo "=== 10 premières lignes du LCOV ==="
-          head -n 10 coverage/lcov.info
 
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4

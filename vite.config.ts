@@ -36,15 +36,22 @@ export default defineConfig(({ mode }) => {
         },
       } : undefined,
     },
-    test: {
-      globals: true,
-      environment: 'jsdom',
-      setupFiles: './src/setupTests.js',
-      coverage: {
-        provider: 'istanbul',
-        reporter: ['text', 'json', 'lcov'],
-        reportsDirectory: './coverage'
-      },
+   test: {
+  globals: true,
+  environment: 'jsdom',
+  setupFiles: './src/setupTests.js',
+  coverage: {
+    provider: 'v8', // Changé depuis 'istanbul'
+    reporter: ['text', 'json', 'lcov'],
+    reportsDirectory: './coverage',
+    include: ['src/**/*.{js,jsx,ts,tsx}'],
+    exclude: [
+      '**/*.d.ts',
+      '**/*.stories.{js,jsx,ts,tsx}',
+      '**/__tests__/**',
+      '**/*.test.{js,jsx,ts,tsx}'
+    ]
+  },
       deps: {
         optimizer: {
           web: {
