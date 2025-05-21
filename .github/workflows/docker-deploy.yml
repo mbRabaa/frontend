@@ -1,4 +1,4 @@
-name: CI/CD Complète
+name:  chaine CI/CD Complète
 
 on:
   push:
@@ -20,6 +20,7 @@ env:
   # Configuration SonarQube
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
+
   SONARQUBE_VERSION: 10.4.1-community
   SONAR_ADMIN_PASSWORD: ${{ secrets.SONARQUBE_ADMIN_PASSWORD }}
   
@@ -162,8 +163,8 @@ jobs:
             -e SONAR_TOKEN="${{ secrets.SONARQUBE_TOKEN }}" \
             -v "$(pwd):/usr/src" \
             sonarsource/sonar-scanner-cli:latest \
-            -Dsonar.projectKey=front_end_$TIMESTAMP \
-            -Dsonar.projectName="FrontEnd_$TIMESTAMP" \
+            -Dsonar.projectKey=frontent_project_$TIMESTAMP \
+            -Dsonar.projectName="Frontend_project_$TIMESTAMP" \
             -Dsonar.sources=src \
             -Dsonar.tests=src \
             -Dsonar.test.inclusions=**/*.test.{js,jsx,ts,tsx} \
