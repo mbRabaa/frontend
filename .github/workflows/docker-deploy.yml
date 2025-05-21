@@ -102,27 +102,50 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 40
     steps:
+      # Étape 1: Récupération du code source
+      # - Checkout du dépôt avec l'historique complet (fetch-depth: 0)
+      # - Nécessaire pour l'analyse des métriques SonarQube
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # Étape 2: Récupération des artefacts de build
+      # - Télécharge les artefacts générés lors du job build-app
+      # - Contient le build final (dist/) et les rapports de couverture (coverage/)
       - name: 📥 Récupérer les artefacts
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts
           path: .
 
+      # Étape 3: Vérification des rapports de test
+      # - Vérifie que le fichier lcov.info existe bien
+      # - Ce fichier est crucial pour l'analyse de couverture de code
       - name: 🔍 Vérifier les rapports
         run: |
-          [ -f "coverage/lcov.info" ] || exit 1
+          echo "Vérification de la présence du rapport de couverture..."
+          [ -f "coverage/lcov.info" ] || { echo "ERREUR: Fichier coverage/lcov.info introuvable"; exit 1; }
+          echo "Rapport de couverture validé avec succès"
 
+      # Étape 4: Configuration de l'environnement SonarQube
+      # - Création d'un réseau Docker isolé pour SonarQube
+      # - Nettoyage d'une éventuelle instance précédente
+      # - Lancement d'un nouveau conteneur SonarQube avec:
+      #   * Persistance des données via volumes Docker
+      #   * Configuration du mot de passe admin
+      #   * Désactivation des vérifications ElasticSearch (accélère le démarrage)
+      #   * Exposition sur le port 9000
       - name: 🐳 Configurer SonarQube
         run: |
-          docker network create sonarnet || true
-          docker stop $SONARQUBE_CONTAINER_NAME || true
-          docker rm -f $SONARQUBE_CONTAINER_NAME || true
-        
+          echo "Création du réseau Docker pour SonarQube..."
+          docker network create sonarnet || echo "Le réseau existe déjà"
+          
+          echo "Nettoyage des instances existantes..."
+          docker stop $SONARQUBE_CONTAINER_NAME 2>/dev/null || echo "Aucun conteneur à arrêter"
+          docker rm -f $SONARQUBE_CONTAINER_NAME 2>/dev/null || echo "Aucun conteneur à supprimer"
+          
+          echo "Lancement du conteneur SonarQube..."
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
             --network sonarnet \
@@ -134,16 +157,30 @@ jobs:
             -e SONARQUBE_ADMIN_PASSWORD=$SONAR_ADMIN_PASSWORD \
             sonarqube:$SONARQUBE_VERSION
 
+          # Attente que SonarQube soit opérationnel (max 60 secondes)
+          echo "Attente du démarrage de SonarQube..."
           for i in {1..30}; do
-            if docker logs $SONARQUBE_CONTAINER_NAME | grep -q "SonarQube is operational"; then
-              echo "SonarQube prêt après $i secondes"
+            if docker logs $SONARQUBE_CONTAINER_NAME 2>&1 | grep -q "SonarQube is operational"; then
+              echo "SonarQube est opérationnel après $((i*2)) secondes"
               break
             fi
             sleep 2
+            [ $i -eq 30 ] && { echo "Timeout: SonarQube ne s'est pas lancé correctement"; exit 1; }
           done
 
+      # Étape 5: Exécution de l'analyse SonarQube
+      # - Utilisation de l'image officielle sonar-scanner-cli
+      # - Configuration complète de l'analyse:
+      #   * Connexion à l'instance SonarQube via le réseau interne
+      #   * Authentification avec un token SonarQube
+      #   * Spécification des sources et tests à analyser
+      #   * Intégration du rapport de couverture (lcov)
+      #   * Exclusion des fichiers non pertinents (node_modules, dist)
+      #   * Configuration TypeScript (tsconfig.json)
+      #   * Attente active du résultat du Quality Gate
       - name: 📊 Analyser le code
         run: |
+          echo "Démarrage de l'analyse SonarQube..."
           docker run --rm \
             --network sonarnet \
             -e SONAR_HOST_URL="http://$SONARQUBE_CONTAINER_NAME:9000" \
@@ -161,31 +198,37 @@ jobs:
             -Dsonar.typescript.tsconfigPath=tsconfig.json \
             -Dsonar.qualitygate.wait=true
 
+          echo "Analyse SonarQube terminée avec succès"
+
+      # Étape 6: Debug en cas d'échec (optionnelle)
+      # - Affiche les logs de SonarQube uniquement en cas d'échec
+      # - Utile pour diagnostiquer les problèmes
       - name: 📜 Afficher les logs SonarQube (en cas d'erreur)
         if: failure()
         run: |
-          docker logs $SONARQUBE_CONTAINER_NAME
+          echo "=== DERNIÈRES LIGNES DES LOGS SONARQUBE ==="
+          docker logs $SONARQUBE_CONTAINER_NAME --tail 100
+          echo "=== FIN DES LOGS ==="
 
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
-      - name: 🔑 Authentification Docker
+      - name: 🔑 Authentification Docker Hub
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
       - name: 📥 Récupérer l'artefact
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts
-          path: .
+          path: dist/
 
       - name: 🐳 Build et Push Docker
         run: |
           docker build \
             -t $DOCKER_IMAGE:latest \
             -t $DOCKER_IMAGE:$GITHUB_SHA \
-            --build-arg VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }} \
             .
           
           docker push $DOCKER_IMAGE:latest
@@ -361,18 +404,18 @@ jobs:
 
       - name: ⎈ Installer la stack monitoring
         run: |
-            kubectl create namespace monitoring || true
-            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-            helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-              --namespace monitoring \
-              --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
-              --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
-              --set prometheus.service.type=NodePort \
-              --set prometheus.service.nodePort=$PROMETHEUS_PORT \
-              --set grafana.service.type=NodePort \
-              --set grafana.service.nodePort=$GRAFANA_PORT \
-              --set alertmanager.service.type=NodePort \
-              --set alertmanager.service.nodePort=$ALERTMANAGER_PORT
+          kubectl create namespace monitoring || true
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
+            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --set prometheus.service.type=NodePort \
+            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
+            --set grafana.service.type=NodePort \
+            --set grafana.service.nodePort=$GRAFANA_PORT \
+            --set alertmanager.service.type=NodePort \
+            --set alertmanager.service.nodePort=$ALERTMANAGER_PORT
 
       - name: 🌐 Afficher les accès
         run: |
