@@ -144,22 +144,23 @@ jobs:
 
       - name: 📊 Analyser le code
         run: |
-          docker run --rm \
-            --network host \
-            -e SONAR_HOST_URL="http://localhost:$SONARQUBE_PORT" \
-            -e SONAR_LOGIN="${{ secrets.SONARQUBE_TOKEN }}" \
-            -v "$(pwd):/usr/src" \
-            sonarsource/sonar-scanner-cli:latest \
-            -Dsonar.projectKey=Frontend_project \
-            -Dsonar.projectName="Frontend Project" \
-            -Dsonar.sources=src \
-            -Dsonar.tests=src \
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
-            -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
-            -Dsonar.exclusions=**/node_modules/**,**/dist/** \
-            -Dsonar.sourceEncoding=UTF-8 \
-            -Dsonar.typescript.tsconfigPath=tsconfig.json \
-            -Dsonar.qualitygate.wait=true
+         docker run --rm \
+         --network host \
+         -e SONAR_HOST_URL="http://localhost:$SONARQUBE_PORT" \
+         -e SONAR_SCANNER_OPTS="-Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}" \
+         -v "$(pwd):/usr/src" \
+         sonarsource/sonar-scanner-cli:latest \
+         -Dsonar.projectKey=Frontend_project \
+         -Dsonar.projectName="Frontend Project" \
+         -Dsonar.sources=src \
+         -Dsonar.tests=src \
+         -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+         -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
+         -Dsonar.exclusions=**/node_modules/**,**/dist/** \
+         -Dsonar.sourceEncoding=UTF-8 \
+         -Dsonar.typescript.tsconfigPath=tsconfig.json \
+         -Dsonar.qualitygate.wait=true \
+         -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
 
   build-and-push:
     needs: sonarqube-analysis
