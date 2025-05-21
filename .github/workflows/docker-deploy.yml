@@ -115,20 +115,14 @@ jobs:
 
       - name: 🔍 Vérifier les rapports
         run: |
-          echo "=== Contenu du dossier coverage ==="
-          ls -la coverage/
           [ -f "coverage/lcov.info" ] || exit 1
 
       - name: 🐳 Configurer SonarQube
         run: |
-          # Créer un réseau dédié
           docker network create sonarnet || true
-          
-          # Arrêter et supprimer le conteneur existant
           docker stop $SONARQUBE_CONTAINER_NAME || true
           docker rm -f $SONARQUBE_CONTAINER_NAME || true
-          
-          # Démarrer SonarQube
+        
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
             --network sonarnet \
@@ -140,32 +134,22 @@ jobs:
             -e SONARQUBE_ADMIN_PASSWORD=$SONAR_ADMIN_PASSWORD \
             sonarqube:$SONARQUBE_VERSION
 
-          echo "Attente du démarrage de SonarQube..."
-          for i in {1..60}; do
-            if curl -sSf http://localhost:$SONARQUBE_PORT > /dev/null; then
-              echo "SonarQube prêt après $((i*5)) secondes"
+          for i in {1..30}; do
+            if docker logs $SONARQUBE_CONTAINER_NAME | grep -q "SonarQube is operational"; then
+              echo "SonarQube prêt après $i secondes"
               break
             fi
-            sleep 5
+            sleep 2
           done
-
-      - name: 🔍 Vérifier l'accès à l'API SonarQube
-        run: |
-          SONAR_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $SONARQUBE_CONTAINER_NAME)
-          echo "IP du conteneur SonarQube: $SONAR_IP"
-          
-          echo "Test de connexion à l'API SonarQube..."
-          curl -v "http://$SONAR_IP:$SONARQUBE_PORT/api/server/version" || true
-          echo ""
 
       - name: 📊 Analyser le code
         run: |
-          # Utiliser le nom du conteneur dans le réseau Docker
           docker run --rm \
             --network sonarnet \
+            -e SONAR_HOST_URL="http://$SONARQUBE_CONTAINER_NAME:9000" \
+            -e SONAR_TOKEN="${{ secrets.SONARQUBE_TOKEN }}" \
             -v "$(pwd):/usr/src" \
             sonarsource/sonar-scanner-cli:latest \
-            -Dsonar.host.url=http://$SONARQUBE_CONTAINER_NAME:9000 \
             -Dsonar.projectKey=Frontend_project \
             -Dsonar.projectName="Frontend Project" \
             -Dsonar.sources=src \
@@ -175,8 +159,7 @@ jobs:
             -Dsonar.exclusions=**/node_modules/**,**/dist/** \
             -Dsonar.sourceEncoding=UTF-8 \
             -Dsonar.typescript.tsconfigPath=tsconfig.json \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.qualitygate.wait=true
 
       - name: 📜 Afficher les logs SonarQube (en cas d'erreur)
         if: failure()
