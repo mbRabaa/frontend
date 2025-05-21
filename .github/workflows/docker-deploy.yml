@@ -50,21 +50,15 @@ jobs:
           node-version: 18
           cache: 'npm'
 
-      - name: 📦 Installer les dépendances
-        run: |
-          npm ci --prefer-offline
-          npm install -D @vitest/coverage-v8
-
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm test -- --coverage --coverage.provider=v8
-          echo "=== Vérification du rapport LCOV ==="
-          [ -f "coverage/lcov.info" ] || exit 1
-          head -n 5 coverage/lcov.info
+          npm run test:coverage
           echo "Build généré dans dist/:"
           ls -lh dist/
-
+          echo "Rapport de couverture dans coverage/:"
+          ls -lh coverage/
+          
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
         with:
