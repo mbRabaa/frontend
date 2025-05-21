@@ -35,9 +35,9 @@ env:
   ALERTMANAGER_PORT: 30092
 
 jobs:
-  build-app:
+  install-deps:
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - name: 🛎 Checkout du code
         uses: actions/checkout@v3
@@ -50,15 +50,23 @@ jobs:
           node-version: 18
           cache: 'npm'
 
+      - name: 📦 Installer les dépendances
+        run: npm ci --prefer-offline
+
+  build:
+    needs: install-deps
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: 🛎 Checkout du code
+        uses: actions/checkout@v3
+
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm run test:coverage
           echo "Build généré dans dist/:"
           ls -lh dist/
-          echo "Rapport de couverture dans coverage/:"
-          ls -lh coverage/
-          
+
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
         with:
@@ -66,31 +74,26 @@ jobs:
           path: dist/
           retention-days: 1
 
-  unit-tests:
-    needs: build-app
+  test:
+    needs: install-deps
     runs-on: self-hosted
     timeout-minutes: 20
     steps:
       - name: 🛎 Checkout du code
         uses: actions/checkout@v3
 
-      - name: ⎔ Configurer Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
-          cache: 'npm'
+      - name: 📦 Installer les dépendances de test
+        run: npm install -D @vitest/coverage-v8
 
-      - name: 📦 Installer les dépendances
-        run: npm ci --prefer-offline
-
-      - name: 🧪 Exécuter les tests unitaires
-        run: npm test
-        env:
-          CI: true
-          NODE_ENV: test
+      - name: 🧪 Exécuter les tests
+        run: |
+          npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=lcov
+          [ -f "coverage/lcov.info" ] || exit 1
+          echo "=== Rapport de couverture généré ==="
+          head -n 5 coverage/lcov.info
 
   sonarqube-analysis:
-    needs: unit-tests
+    needs: [build, test]
     runs-on: self-hosted
     timeout-minutes: 40
     steps:
@@ -108,17 +111,14 @@ jobs:
 
       - name: 🐳 Nettoyer et démarrer SonarQube
         run: |
-          # Nettoyage complet
           docker stop $SONARQUBE_CONTAINER_NAME || true
           docker rm -f $SONARQUBE_CONTAINER_NAME || true
           docker volume rm sonarqube_data sonarqube_extensions sonarqube_logs || true
           
-          # Création des volumes
           docker volume create sonarqube_data
           docker volume create sonarqube_extensions
           docker volume create sonarqube_logs
           
-          # Démarrage avec version plus récente
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
             -p $SONARQUBE_PORT:9000 \
@@ -128,7 +128,6 @@ jobs:
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:$SONARQUBE_VERSION
 
-          # Attente du démarrage
           for i in {1..30}; do
             if curl -sSf http://localhost:$SONARQUBE_PORT/api/system/status | grep -q '"status":"UP"'; then
               echo "SonarQube prêt après $((i*10)) secondes"
@@ -137,7 +136,6 @@ jobs:
             sleep 10
           done
 
-          # Changement du mot de passe admin
           curl -u admin:admin -X POST "http://localhost:$SONARQUBE_PORT/api/users/change_password" \
             -d "login=admin&previousPassword=admin&password=$SONAR_ADMIN_PASSWORD"
 
@@ -170,7 +168,6 @@ jobs:
         if: always()
         run: |
           HOST_IP=$(hostname -I | awk '{print $1}')
-          # Garder seulement les 5 dernières analyses
           curl -u admin:$SONAR_ADMIN_PASSWORD -sS "http://$HOST_IP:$SONARQUBE_PORT/api/projects/search?ps=100" | \
             jq -r '.components[] | select(.key | startswith("front_end_")) | .key' | \
             sort -r | \
