@@ -98,54 +98,62 @@ jobs:
           NODE_ENV: test
 
   sonarqube-analysis:
-    needs: unit-tests
+    needs: build-app  # Dépend uniquement de build-app, pas des tests unitaires
     runs-on: self-hosted
     timeout-minutes: 40
     steps:
-      # Étape 1: Récupération du code source
-      # - Checkout du dépôt avec l'historique complet (fetch-depth: 0)
-      # - Nécessaire pour l'analyse des métriques SonarQube
+      # -------------------------------------------------------------------
+      # ÉTAPE 1: PRÉPARATION DE L'ENVIRONNEMENT
+      # -------------------------------------------------------------------
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # Nécessaire pour l'analyse des métriques SonarQube
+        comment: |
+          Récupère l'intégralité du dépôt avec l'historique Git complet.
+          Important pour l'analyse des métriques comme le "blame" et les nouvelles issues.
 
-      # Étape 2: Récupération des artefacts de build
-      # - Télécharge les artefacts générés lors du job build-app
-      # - Contient le build final (dist/) et les rapports de couverture (coverage/)
-      - name: 📥 Récupérer les artefacts
+      - name: 📥 Récupérer les artefacts de build
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts
           path: .
+        comment: |
+          Récupère les artefacts générés par le job build-app :
+          - Le build compilé (dossier dist/)
+          - Les rapports de couverture (dossier coverage/)
 
-      # Étape 3: Vérification des rapports de test
-      # - Vérifie que le fichier lcov.info existe bien
-      # - Ce fichier est crucial pour l'analyse de couverture de code
-      - name: 🔍 Vérifier les rapports
+      # -------------------------------------------------------------------
+      # ÉTAPE 2: VÉRIFICATION DES PRÉREQUIS
+      # -------------------------------------------------------------------
+      - name: 🔍 Vérifier les rapports de test
         run: |
-          echo "Vérification de la présence du rapport de couverture..."
-          [ -f "coverage/lcov.info" ] || { echo "ERREUR: Fichier coverage/lcov.info introuvable"; exit 1; }
-          echo "Rapport de couverture validé avec succès"
+          echo "Vérification du rapport de couverture..."
+          if [ ! -f "coverage/lcov.info" ]; then
+            echo "❌ Erreur: Fichier coverage/lcov.info introuvable"
+            exit 1
+          fi
+          echo "✔ Rapport de couverture validé"
+        comment: |
+          Vérifie la présence du fichier lcov.info qui contient les données
+          de couverture de code générées lors des tests.
 
-      # Étape 4: Configuration de l'environnement SonarQube
-      # - Création d'un réseau Docker isolé pour SonarQube
-      # - Nettoyage d'une éventuelle instance précédente
-      # - Lancement d'un nouveau conteneur SonarQube avec:
-      #   * Persistance des données via volumes Docker
-      #   * Configuration du mot de passe admin
-      #   * Désactivation des vérifications ElasticSearch (accélère le démarrage)
-      #   * Exposition sur le port 9000
-      - name: 🐳 Configurer SonarQube
+      # -------------------------------------------------------------------
+      # ÉTAPE 3: DÉPLOIEMENT DE SONARQUBE
+      # -------------------------------------------------------------------
+      - name: 🐳 Lancer SonarQube
         run: |
-          echo "Création du réseau Docker pour SonarQube..."
+          # Création d'un réseau Docker isolé
+          echo "Création du réseau Docker 'sonarnet'..."
           docker network create sonarnet || echo "Le réseau existe déjà"
-          
-          echo "Nettoyage des instances existantes..."
+
+          # Nettoyage des instances existantes
+          echo "Nettoyage des conteneurs SonarQube existants..."
           docker stop $SONARQUBE_CONTAINER_NAME 2>/dev/null || echo "Aucun conteneur à arrêter"
           docker rm -f $SONARQUBE_CONTAINER_NAME 2>/dev/null || echo "Aucun conteneur à supprimer"
-          
-          echo "Lancement du conteneur SonarQube..."
+
+          # Lancement du conteneur SonarQube avec persistance des données
+          echo "Démarrage de SonarQube en version $SONARQUBE_VERSION..."
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
             --network sonarnet \
@@ -157,28 +165,27 @@ jobs:
             -e SONARQUBE_ADMIN_PASSWORD=$SONAR_ADMIN_PASSWORD \
             sonarqube:$SONARQUBE_VERSION
 
-          # Attente que SonarQube soit opérationnel (max 60 secondes)
+          # Attente du démarrage complet (max 60 secondes)
           echo "Attente du démarrage de SonarQube..."
           for i in {1..30}; do
             if docker logs $SONARQUBE_CONTAINER_NAME 2>&1 | grep -q "SonarQube is operational"; then
-              echo "SonarQube est opérationnel après $((i*2)) secondes"
+              echo "✔ SonarQube opérationnel après $((i*2)) secondes"
               break
             fi
             sleep 2
-            [ $i -eq 30 ] && { echo "Timeout: SonarQube ne s'est pas lancé correctement"; exit 1; }
+            [ $i -eq 30 ] && { echo "❌ Timeout: SonarQube ne s'est pas lancé"; exit 1; }
           done
+        comment: |
+          Déploie une instance SonarQube dans un conteneur Docker avec :
+          - Persistance des données via volumes
+          - Configuration du mot de passe admin
+          - Désactivation des vérifications ElasticSearch pour accélérer le démarrage
+          - Exposition sur le port 9000
 
-      # Étape 5: Exécution de l'analyse SonarQube
-      # - Utilisation de l'image officielle sonar-scanner-cli
-      # - Configuration complète de l'analyse:
-      #   * Connexion à l'instance SonarQube via le réseau interne
-      #   * Authentification avec un token SonarQube
-      #   * Spécification des sources et tests à analyser
-      #   * Intégration du rapport de couverture (lcov)
-      #   * Exclusion des fichiers non pertinents (node_modules, dist)
-      #   * Configuration TypeScript (tsconfig.json)
-      #   * Attente active du résultat du Quality Gate
-      - name: 📊 Analyser le code
+      # -------------------------------------------------------------------
+      # ÉTAPE 4: ANALYSE DU CODE
+      # -------------------------------------------------------------------
+      - name: 📊 Exécuter l'analyse SonarQube
         run: |
           echo "Démarrage de l'analyse SonarQube..."
           docker run --rm \
@@ -198,20 +205,31 @@ jobs:
             -Dsonar.typescript.tsconfigPath=tsconfig.json \
             -Dsonar.qualitygate.wait=true
 
-          echo "Analyse SonarQube terminée avec succès"
+          echo "✔ Analyse SonarQube terminée avec succès"
+        comment: |
+          Exécute l'analyse de code avec le scanner SonarQube en spécifiant :
+          - La clé et le nom du projet
+          - Les dossiers sources et tests
+          - Le rapport de couverture de code
+          - Les exclusions (node_modules, dist)
+          - La configuration TypeScript
+          - L'attente active du résultat du Quality Gate
 
-      # Étape 6: Debug en cas d'échec (optionnelle)
-      # - Affiche les logs de SonarQube uniquement en cas d'échec
-      # - Utile pour diagnostiquer les problèmes
-      - name: 📜 Afficher les logs SonarQube (en cas d'erreur)
+      # -------------------------------------------------------------------
+      # ÉTAPE 5: GESTION DES ERREURS (OPTIONNEL)
+      # -------------------------------------------------------------------
+      - name: 📜 Afficher les logs en cas d'échec
         if: failure()
         run: |
           echo "=== DERNIÈRES LIGNES DES LOGS SONARQUBE ==="
           docker logs $SONARQUBE_CONTAINER_NAME --tail 100
           echo "=== FIN DES LOGS ==="
+        comment: |
+          Affiche les logs du conteneur SonarQube uniquement en cas d'échec
+          pour aider au diagnostic des problèmes.
 
   build-and-push:
-    needs: sonarqube-analysis
+    needs: [unit-tests, sonarqube-analysis]  # Attend les tests ET l'analyse Sonar
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
@@ -234,6 +252,7 @@ jobs:
           docker push $DOCKER_IMAGE:latest
           docker push $DOCKER_IMAGE:$GITHUB_SHA
 
+  # [Les autres jobs restent identiques...]
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
