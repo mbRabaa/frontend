@@ -42,7 +42,8 @@ export default defineConfig(({ mode }) => {
       setupFiles: './src/setupTests.js',
       coverage: {
         provider: 'istanbul',
-        reporter: ['text', 'json', 'html'],
+        reporter: ['text', 'json', 'lcov'],
+        reportsDirectory: './coverage'
       },
       deps: {
         optimizer: {

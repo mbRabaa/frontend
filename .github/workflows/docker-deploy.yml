@@ -20,6 +20,8 @@ env:
   # Configuration SonarQube
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
+  SONAR_PROJECT_KEY: front_end
+  SONAR_PROJECT_NAME: "Front End"
   SONARQUBE_VERSION: 10.4.1-community
   SONAR_ADMIN_PASSWORD: ${{ secrets.SONARQUBE_ADMIN_PASSWORD }}
   
@@ -53,17 +55,28 @@ jobs:
       - name: 📦 Installer les dépendances
         run: |
           npm ci --prefer-offline
-          npm install -D @vitest/coverage-v8
-          
-      - name: 🛠️ Builder l'application
+          npm install -D @vitest/coverage-v8 @vitest/ui
+
+      - name: 🛠️ Builder l'application et générer les rapports
         run: |
+          # Générer le rapport de couverture LCOV
+          npx vitest run --coverage.enabled --coverage.reporter=lcov --coverage.reportsDirectory=./coverage
+          
+          # Vérifier la présence du rapport
+          if [ ! -f "coverage/lcov.info" ]; then
+            echo "::error::Le fichier coverage/lcov.info n'a pas été généré"
+            ls -la coverage/
+            exit 1
+          fi
+          
+          echo "=== Rapport LCOV généré ==="
+          head -n 5 coverage/lcov.info
+
+          # Builder l'application
           npm run build
-          npm run test:coverage
           echo "Build généré dans dist/:"
           ls -lh dist/
-          echo "Rapport de couverture dans coverage/:"
-          ls -lh coverage/
-          
+
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
         with:
@@ -104,27 +117,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 🔍 Vérifier les rapports de test
+      - name: 🔍 Vérifier les rapports
         run: |
-          echo "=== Fichiers de couverture ==="
+          echo "=== Contenu du dossier coverage ==="
           ls -la coverage/
-          echo "=== Premières lignes du rapport LCOV ==="
-          head -n 10 coverage/lcov.info || echo "Aucun rapport LCOV trouvé"
           [ -f "coverage/lcov.info" ] || exit 1
 
-      - name: 🐳 Nettoyer et démarrer SonarQube
+      - name: 🐳 Démarrer SonarQube (nettoyage complet)
         run: |
-          # Nettoyage complet
           docker stop $SONARQUBE_CONTAINER_NAME || true
           docker rm -f $SONARQUBE_CONTAINER_NAME || true
           docker volume rm sonarqube_data sonarqube_extensions sonarqube_logs || true
           
-          # Création des volumes
           docker volume create sonarqube_data
           docker volume create sonarqube_extensions
           docker volume create sonarqube_logs
           
-          # Démarrage avec version plus récente
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
             -p $SONARQUBE_PORT:9000 \
@@ -134,26 +142,22 @@ jobs:
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:$SONARQUBE_VERSION
 
-          # Attente du démarrage
           for i in {1..30}; do
-            if curl -sSf http://localhost:$SONARQUBE_PORT/api/system/status | grep -q '"status":"UP"'; then
+            if curl -sSf "http://localhost:$SONARQUBE_PORT/api/system/status" | grep -q '"status":"UP"'; then
               echo "SonarQube prêt après $((i*10)) secondes"
               break
             fi
             sleep 10
           done
 
-          # Changement du mot de passe admin
+          # Configurer le mot de passe admin
           curl -u admin:admin -X POST "http://localhost:$SONARQUBE_PORT/api/users/change_password" \
             -d "login=admin&previousPassword=admin&password=$SONAR_ADMIN_PASSWORD"
 
-      - name: 📊 Analyser le code
+      - name: 🔍 Analyse SonarQube
         run: |
           HOST_IP=$(hostname -I | awk '{print $1}')
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          
-          echo "=== Configuration TypeScript ==="
-          cat tsconfig.json || echo "Aucun tsconfig.json trouvé"
           
           docker run --rm \
             --network host \
@@ -162,22 +166,18 @@ jobs:
             -v "$(pwd):/usr/src" \
             sonarsource/sonar-scanner-cli:latest \
             -Dsonar.projectKey=front_end_$TIMESTAMP \
-            -Dsonar.projectName="FrontEnd_$TIMESTAMP" \
+            -Dsonar.projectName="Front End $TIMESTAMP" \
             -Dsonar.sources=src \
             -Dsonar.tests=src \
-            -Dsonar.test.inclusions=**/*.test.{js,jsx,ts,tsx} \
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
             -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/*.spec.{js,ts},**/*.test.{js,ts} \
             -Dsonar.sourceEncoding=UTF-8 \
             -Dsonar.typescript.tsconfigPath=tsconfig.json \
             -Dsonar.typescript.compilerOptions="{\"moduleResolution\":\"node\",\"target\":\"es6\",\"module\":\"esnext\"}" \
-            -Dsonar.coverage.exclusions=**/*.test.{js,ts},**/test/** \
-            -Dsonar.cpd.exclusions=**/*.test.{js,ts} \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.verbose=true
+            -Dsonar.qualitygate.wait=true
 
-      - name: 🧹 Nettoyer les anciennes analyses
+      - name: 🧹 Nettoyer les anciens projets
         if: always()
         run: |
           HOST_IP=$(hostname -I | awk '{print $1}')
