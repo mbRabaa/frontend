@@ -1,4 +1,4 @@
-name:   chaine CI/CD Complète
+name: CI/CD Complète
 
 on:
   push:
@@ -53,17 +53,29 @@ jobs:
       - name: 📦 Installer les dépendances
         run: |
           npm ci --prefer-offline
-          npm install -D @vitest/coverage-v8
-          
+          npm install -D @vitest/coverage-v8 lcov-result-merger
+
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm run test:coverage
+          
+          # Exécuter les tests avec couverture
+          npm test -- --coverage --coverage.reporter=lcov --coverage.reportsDirectory=./coverage
+          
+          # Vérifier et convertir si nécessaire
+          if [ ! -f "coverage/lcov.info" ] && [ -f "coverage/coverage-final.json" ]; then
+            npx lcov-result-merger 'coverage/coverage-final.json' > 'coverage/lcov.info'
+          fi
+          
+          # Vérification finale
           echo "Build généré dans dist/:"
           ls -lh dist/
           echo "Rapport de couverture dans coverage/:"
           ls -lh coverage/
-          
+          [ -f "coverage/lcov.info" ] || (echo "Erreur: lcov.info non généré" && exit 1)
+          echo "=== 10 premières lignes du LCOV ==="
+          head -n 10 coverage/lcov.info
+
       - name: 📦 Sauvegarder le build
         uses: actions/upload-artifact@v4
         with:
@@ -109,8 +121,7 @@ jobs:
           echo "=== Fichiers de couverture ==="
           ls -la coverage/
           echo "=== Premières lignes du rapport LCOV ==="
-          head -n 10 coverage/lcov.info || echo "Aucun rapport LCOV trouvé"
-          [ -f "coverage/lcov.info" ] || exit 1
+          head -n 10 coverage/lcov.info || (echo "Aucun rapport LCOV trouvé" && exit 1)
 
       - name: 🐳 Nettoyer et démarrer SonarQube
         run: |
@@ -152,9 +163,6 @@ jobs:
           HOST_IP=$(hostname -I | awk '{print $1}')
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           
-          echo "=== Configuration TypeScript ==="
-          cat tsconfig.json || echo "Aucun tsconfig.json trouvé"
-          
           docker run --rm \
             --network host \
             -e SONAR_HOST_URL="http://$HOST_IP:$SONARQUBE_PORT" \
@@ -171,11 +179,9 @@ jobs:
             -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/*.spec.{js,ts},**/*.test.{js,ts} \
             -Dsonar.sourceEncoding=UTF-8 \
             -Dsonar.typescript.tsconfigPath=tsconfig.json \
-            -Dsonar.typescript.compilerOptions="{\"moduleResolution\":\"node\",\"target\":\"es6\",\"module\":\"esnext\"}" \
             -Dsonar.coverage.exclusions=**/*.test.{js,ts},**/test/** \
             -Dsonar.cpd.exclusions=**/*.test.{js,ts} \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.verbose=true
+            -Dsonar.qualitygate.wait=true
 
       - name: 🧹 Nettoyer les anciennes analyses
         if: always()
@@ -210,6 +216,7 @@ jobs:
           docker build \
             -t $DOCKER_IMAGE:latest \
             -t $DOCKER_IMAGE:$GITHUB_SHA \
+            --build-arg VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }} \
             .
           
           docker push $DOCKER_IMAGE:latest
