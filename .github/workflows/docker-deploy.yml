@@ -20,8 +20,6 @@ env:
   # Configuration SonarQube
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
-  SONAR_PROJECT_KEY: frontend
-  SONAR_PROJECT_NAME: "Frontend_projet"
   SONARQUBE_VERSION: 10.4.1-community
   SONAR_ADMIN_PASSWORD: ${{ secrets.SONARQUBE_ADMIN_PASSWORD }}
   
@@ -56,20 +54,24 @@ jobs:
         run: |
           npm ci --prefer-offline
           npm install -D @vitest/coverage-v8
+
       - name: 🛠️ Builder l'application
         run: |
           npm run build
-          npm test -- --coverage --coverage.provider=v8
-          echo "=== Vérification du rapport LCOV ==="
+          npm test -- --coverage --coverage.provider=v8 --coverage.reporter=lcov
+          echo "=== Vérification des rapports de couverture ==="
+          ls -la coverage/
           [ -f "coverage/lcov.info" ] || exit 1
-          head -n 5 coverage/lcov.info
-          echo "Build généré dans dist/:"
+          echo "=== Build généré ==="
           ls -lh dist/
-      - name: 📦 Sauvegarder le build
+
+      - name: 📦 Sauvegarder les artefacts
         uses: actions/upload-artifact@v4
         with:
-          name: react-build
-          path: dist/
+          name: build-artifacts
+          path: |
+            dist/
+            coverage/
           retention-days: 1
 
   unit-tests:
@@ -98,20 +100,35 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: 🛎️ Checkout du code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🐳 Démarrer SonarQube
+      - name: 📥 Récupérer les artefacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: 🔍 Vérifier les rapports
+        run: |
+          echo "=== Contenu du dossier coverage ==="
+          ls -la coverage/
+          echo "=== Premières lignes du rapport LCOV ==="
+          head -n 10 coverage/lcov.info
+
+      - name: 🐳 Configurer SonarQube
         run: |
           docker stop $SONARQUBE_CONTAINER_NAME || true
           docker rm -f $SONARQUBE_CONTAINER_NAME || true
-          docker volume create sonarqube_data || true
-          docker volume create sonarqube_extensions || true
-          docker volume create sonarqube_logs || true
+          docker volume rm sonarqube_data sonarqube_extensions sonarqube_logs || true
+          
+          docker volume create sonarqube_data
+          docker volume create sonarqube_extensions
+          docker volume create sonarqube_logs
           
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
@@ -121,43 +138,70 @@ jobs:
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
             sonarqube:$SONARQUBE_VERSION
+
+          echo "Attente du démarrage de SonarQube..."
           for i in {1..30}; do
             if curl -sSf http://localhost:$SONARQUBE_PORT/api/system/status | grep -q '"status":"UP"'; then
-              echo "SonarQube prêt!"
+              echo "SonarQube prêt après $((i*10)) secondes"
               break
             fi
             sleep 10
           done
-      - name: 🔍 Analyse SonarQube
+
+          curl -u admin:admin -X POST "http://localhost:$SONARQUBE_PORT/api/users/change_password" \
+            -d "login=admin&previousPassword=admin&password=$SONAR_ADMIN_PASSWORD"
+
+      - name: 📊 Analyser le code
         run: |
           HOST_IP=$(hostname -I | awk '{print $1}')
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          
           docker run --rm \
             --network host \
             -e SONAR_HOST_URL="http://$HOST_IP:$SONARQUBE_PORT" \
             -e SONAR_TOKEN="${{ secrets.SONARQUBE_TOKEN }}" \
             -v "$(pwd):/usr/src" \
             sonarsource/sonar-scanner-cli:latest \
-            -Dsonar.projectKey=$SONAR_PROJECT_KEY \
-            -Dsonar.projectName="$SONAR_PROJECT_NAME" \
+            -Dsonar.projectKey=front_end_$TIMESTAMP \
+            -Dsonar.projectName="FrontEnd_$TIMESTAMP" \
             -Dsonar.sources=src \
+            -Dsonar.tests=src \
+            -Dsonar.test.inclusions=**/*.test.{js,jsx,ts,tsx} \
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
-            -Dsonar.exclusions=**/node_modules/**,**/*.test.js \
+            -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/*.spec.{js,ts},**/*.test.{js,ts} \
             -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.typescript.tsconfigPath=tsconfig.json \
+            -Dsonar.coverage.exclusions=**/*.test.{js,ts},**/test/** \
+            -Dsonar.cpd.exclusions=**/*.test.{js,ts} \
             -Dsonar.qualitygate.wait=true
-            
+
+      - name: 🧹 Nettoyer SonarQube
+        if: always()
+        run: |
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          curl -u admin:$SONAR_ADMIN_PASSWORD -sS "http://$HOST_IP:$SONARQUBE_PORT/api/projects/search?ps=100" | \
+            jq -r '.components[] | select(.key | startswith("front_end_")) | .key' | \
+            sort -r | \
+            tail -n +6 | \
+            while read -r project; do
+              echo "Suppression du projet $project"
+              curl -u admin:$SONAR_ADMIN_PASSWORD -X POST "http://$HOST_IP:$SONARQUBE_PORT/api/projects/delete?project=$project"
+            done
+
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
-      - name: 🔑 Authentification Docker Hub
+      - name: 🔑 Authentification Docker
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
       - name: 📥 Récupérer l'artefact
         uses: actions/download-artifact@v4
         with:
-          name: react-build
-          path: dist/
+          name: build-artifacts
+          path: .
 
       - name: 🐳 Build et Push Docker
         run: |
@@ -169,6 +213,7 @@ jobs:
           
           docker push $DOCKER_IMAGE:latest
           docker push $DOCKER_IMAGE:$GITHUB_SHA
+
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
@@ -181,6 +226,7 @@ jobs:
         run: |
           docker stop $CONTAINER_NAME || true
           docker rm -f $CONTAINER_NAME || true
+
       - name: 🚀 Déploiement
         run: |
           docker pull $DOCKER_IMAGE:latest
@@ -190,11 +236,13 @@ jobs:
             --restart unless-stopped \
             -e NODE_ENV=production \
             $DOCKER_IMAGE:latest
+
       - name: ✅ Vérification
         run: |
           sleep 15
           curl -sSf http://localhost:$PORT/ || exit 1
           echo "Déploiement Docker réussi!"
+
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
@@ -216,6 +264,7 @@ jobs:
             --disable traefik \
             --node-ip $(hostname -I | awk '{print $1}') \
             --docker
+
       - name: 🔧 Configuration kubectl
         run: |
           mkdir -p ~/.kube
@@ -226,12 +275,14 @@ jobs:
           
           kubectl cluster-info
           kubectl get nodes -o wide
+
       - name: 📌 Sauvegarde révision actuelle
         id: save-revision
         run: |
           CURRENT_REVISION=$(kubectl get deployment frontend-deployment -n frontend -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "0")
           echo "CURRENT_REVISION=$CURRENT_REVISION" >> $GITHUB_ENV
           echo "Révision actuelle sauvegardée: $CURRENT_REVISION"
+
       - name: 🚀 Déploiement K8s
         run: |
           kubectl apply -f $K8S_FRONTEND_PATH/namespace.yaml
@@ -241,6 +292,7 @@ jobs:
           
           envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
           kubectl apply -f $K8S_FRONTEND_PATH/service.yaml
+
       - name: 🔍 Vérification déploiement
         id: verify-deployment
         run: |
@@ -252,6 +304,7 @@ jobs:
             echo "status=failure" >> $GITHUB_OUTPUT
             echo "::error::Échec de la vérification du déploiement"
           fi
+
       - name: 🔄 Rollback si échec
         if: steps.verify-deployment.outputs.status == 'failure'
         run: |
@@ -264,6 +317,7 @@ jobs:
           echo "État après rollback:"
           kubectl get pods -n frontend
           exit 1
+
       - name: 🐳 Déploiement Portainer
         if: steps.verify-deployment.outputs.status == 'success'
         run: |
@@ -315,6 +369,7 @@ jobs:
             }'
             
           echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
+
   cluster-monitoring:
     needs: deploy-k3s
     runs-on: self-hosted
@@ -326,6 +381,7 @@ jobs:
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
+
       - name: ⎈ Installer la stack monitoring
         run: |
             kubectl create namespace monitoring || true
@@ -340,6 +396,7 @@ jobs:
               --set grafana.service.nodePort=$GRAFANA_PORT \
               --set alertmanager.service.type=NodePort \
               --set alertmanager.service.nodePort=$ALERTMANAGER_PORT
+
       - name: 🌐 Afficher les accès
         run: |
           echo "=== MONITORING ==="
