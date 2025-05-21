@@ -1,4 +1,4 @@
-name:  chaine devops Complète
+name: Chaine DevOps Complète
 
 on:
   push:
@@ -121,46 +121,67 @@ jobs:
 
       - name: 🐳 Configurer SonarQube
         run: |
+          # Créer un réseau dédié
+          docker network create sonarnet || true
+          
+          # Arrêter et supprimer le conteneur existant
           docker stop $SONARQUBE_CONTAINER_NAME || true
           docker rm -f $SONARQUBE_CONTAINER_NAME || true
           
+          # Démarrer SonarQube
           docker run -d \
             --name $SONARQUBE_CONTAINER_NAME \
+            --network sonarnet \
             -p $SONARQUBE_PORT:9000 \
             -v sonarqube_data:/opt/sonarqube/data \
             -v sonarqube_extensions:/opt/sonarqube/extensions \
             -v sonarqube_logs:/opt/sonarqube/logs \
             -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+            -e SONARQUBE_ADMIN_PASSWORD=$SONAR_ADMIN_PASSWORD \
             sonarqube:$SONARQUBE_VERSION
 
           echo "Attente du démarrage de SonarQube..."
-          for i in {1..30}; do
+          for i in {1..60}; do
             if curl -sSf http://localhost:$SONARQUBE_PORT > /dev/null; then
-              echo "SonarQube prêt après $((i*10)) secondes"
+              echo "SonarQube prêt après $((i*5)) secondes"
               break
             fi
-            sleep 10
+            sleep 5
           done
+
+      - name: 🔍 Vérifier l'accès à l'API SonarQube
+        run: |
+          SONAR_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $SONARQUBE_CONTAINER_NAME)
+          echo "IP du conteneur SonarQube: $SONAR_IP"
+          
+          echo "Test de connexion à l'API SonarQube..."
+          curl -v "http://$SONAR_IP:$SONARQUBE_PORT/api/server/version" || true
+          echo ""
 
       - name: 📊 Analyser le code
         run: |
-         docker run --rm \
-         --network host \
-         -e SONAR_HOST_URL="http://localhost:$SONARQUBE_PORT" \
-         -e SONAR_SCANNER_OPTS="-Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}" \
-         -v "$(pwd):/usr/src" \
-         sonarsource/sonar-scanner-cli:latest \
-         -Dsonar.projectKey=Frontend_project \
-         -Dsonar.projectName="Frontend Project" \
-         -Dsonar.sources=src \
-         -Dsonar.tests=src \
-         -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
-         -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
-         -Dsonar.exclusions=**/node_modules/**,**/dist/** \
-         -Dsonar.sourceEncoding=UTF-8 \
-         -Dsonar.typescript.tsconfigPath=tsconfig.json \
-         -Dsonar.qualitygate.wait=true \
-         -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+          # Utiliser le nom du conteneur dans le réseau Docker
+          docker run --rm \
+            --network sonarnet \
+            -v "$(pwd):/usr/src" \
+            sonarsource/sonar-scanner-cli:latest \
+            -Dsonar.host.url=http://$SONARQUBE_CONTAINER_NAME:9000 \
+            -Dsonar.projectKey=Frontend_project \
+            -Dsonar.projectName="Frontend Project" \
+            -Dsonar.sources=src \
+            -Dsonar.tests=src \
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.exclusions=**/node_modules/**,**/dist/** \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.typescript.tsconfigPath=tsconfig.json \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+
+      - name: 📜 Afficher les logs SonarQube (en cas d'erreur)
+        if: failure()
+        run: |
+          docker logs $SONARQUBE_CONTAINER_NAME
 
   build-and-push:
     needs: sonarqube-analysis
