@@ -10,7 +10,7 @@ env:
   K3S_VERSION: v1.26.5+k3s1
   K8S_FRONTEND_PATH: ./k8s
   NODE_PORT: 30080
-  CANARY_PORT: 30081
+  CANARY_PORT: 30083
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/front_end
@@ -22,7 +22,7 @@ env:
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
   SONARQUBE_VERSION: 10.4.1-community
-  SONAR_ADMIN_PASSWORD: ${{ secrets.SONARQUBE_ADMIN_PASSWORD }}
+  SONAR_ADMIN_PASSWORD: ${{ secrets.SONAR_ADMIN_PASSWORD }}
   SONARQUBE_FULL_URL: http://localhost:9000
   
   # Configuration Portainer
@@ -129,14 +129,14 @@ jobs:
       - name: 📊 Exécuter l'analyse SonarQube
         uses: sonarsource/sonarqube-scan-action@master
         env:
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: $SONARQUBE_FULL_URL
         with:
           args: >
             -Dsonar.projectKey=frontend
             -Dsonar.projectName=Frontend
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
             -Dsonar.qualitygate.wait=true
 
       - name: 🏷️ Tag du commit avec le résultat SonarQube
