@@ -22,8 +22,6 @@ env:
   SONARQUBE_CONTAINER_NAME: sonarqube
   SONARQUBE_PORT: 9000
   SONARQUBE_VERSION: 10.4.1-community
-  SONAR_ADMIN_PASSWORD: ${{ secrets.SONAR_ADMIN_PASSWORD }}
-  SONARQUBE_FULL_URL: http://localhost:9000
   
   # Configuration Portainer
   PORTAINER_USER: admin
@@ -102,48 +100,67 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: 🛎 Checkout du code
-        uses: actions/checkout@v3
+      - name: 🛎️ Checkout du code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 🐳 Lancer SonarQube
+      - name: 🔍 Vérifier si SonarQube est déjà en cours d'exécution
+        id: check-sonarqube
         run: |
-          docker stop $SONARQUBE_CONTAINER_NAME || true
-          docker rm -f $SONARQUBE_CONTAINER_NAME || true
-          docker run -d \
-            --name $SONARQUBE_CONTAINER_NAME \
-            -p $SONARQUBE_PORT:9000 \
-            -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
-            -e SONAR_ADMIN_PASSWORD=$SONAR_ADMIN_PASSWORD \
-            sonarqube:$SONARQUBE_VERSION
-          
-          echo "En attente du démarrage de SonarQube..."
-          while ! curl -sSf "$SONARQUBE_FULL_URL/api/system/status" | grep -q '"status":"UP"'; do
-            sleep 10
-          done
-          echo "SonarQube est prêt!"
+          if docker ps -q --filter "name=${{ env.SONARQUBE_CONTAINER_NAME }}"; then
+            echo "sonarqube_running=true" >> $GITHUB_OUTPUT
+            echo "🔄 SonarQube est déjà en cours d'exécution"
+          else
+            echo "sonarqube_running=false" >> $GITHUB_OUTPUT
+            echo "⚠️ SonarQube n'est pas démarré, démarrage..."
+            docker run -d \
+              --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
+              -p ${{ env.SONARQUBE_PORT }}:9000 \
+              -v sonarqube_data:/opt/sonarqube/data \
+              -v sonarqube_extensions:/opt/sonarqube/extensions \
+              -v sonarqube_logs:/opt/sonarqube/logs \
+              -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+              sonarqube:${{ env.SONARQUBE_VERSION }}
+          fi
 
-      - name: 📊 Exécuter l'analyse SonarQube
-        uses: sonarsource/sonarqube-scan-action@master
+      - name: ⏳ Attendre que SonarQube soit prêt
+        run: |
+          for i in {1..30}; do
+            if curl -sSf "${{ secrets.SONAR_HOST_URL }}/api/system/status" | grep -q '"status":"UP"'; then
+              echo "✅ SonarQube est opérationnel"
+              exit 0
+            fi
+            sleep 5
+            echo "⌛ Tentative $i/30 - En attente..."
+          done
+          echo "❌ SonarQube n'a pas démarré dans le délai imparti"
+          exit 1
+
+      - name: 🔍 Exécuter l'analyse SonarQube
+        uses: SonarSource/sonarqube-scan-action@v4
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: $SONARQUBE_FULL_URL
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
-            -Dsonar.projectKey=frontend
-            -Dsonar.projectName=Frontend
+            -Dsonar.projectKey=Frontend_project
+            -Dsonar.projectName="Frontend_project"
+            -Dsonar.sources=src
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.js
+            -Dsonar.sourceEncoding=UTF-8
             -Dsonar.qualitygate.wait=true
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
-      - name: 🏷️ Tag du commit avec le résultat SonarQube
-        if: success()
+      - name: 📌 Afficher les résultats
         run: |
-          echo "Analysis succeeded - would tag commit here"
-          # Vous pouvez ajouter un tagging Git si nécessaire
+          echo "=========================================="
+          echo "🔍 Analyse SonarQube terminée avec succès !"
+          echo "🌐 Accès : ${{ secrets.SONAR_HOST_URL }}/dashboard?id=Frontend_project"
+          echo "=========================================="
 
   build-and-push:
     needs: sonarqube-analysis
