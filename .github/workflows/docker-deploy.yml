@@ -10,6 +10,7 @@ env:
   K3S_VERSION: v1.26.5+k3s1
   K8S_FRONTEND_PATH: ./k8s
   NODE_PORT: 30080
+  CANARY_PORT: 30081
   
   # Configuration Docker
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/front_end
@@ -97,10 +98,47 @@ jobs:
           CI: true
           NODE_ENV: test
 
- 
+  sonarqube-analysis:
+    needs: unit-tests
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: 🛎 Checkout du code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: 🐳 Lancer SonarQube
+        run: |
+          docker stop $SONARQUBE_CONTAINER_NAME || true
+          docker rm -f $SONARQUBE_CONTAINER_NAME || true
+          docker run -d \
+            --name $SONARQUBE_CONTAINER_NAME \
+            -p $SONARQUBE_PORT:9000 \
+            -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+            -e SONAR_ADMIN_PASSWORD=$SONAR_ADMIN_PASSWORD \
+            sonarqube:$SONARQUBE_VERSION
+          
+          echo "En attente du démarrage de SonarQube..."
+          while ! curl -sSf "http://localhost:$SONARQUBE_PORT/api/system/status" | grep -q '"status":"UP"'; do
+            sleep 10
+          done
+
+      - name: 📊 Exécuter l'analyse SonarQube
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: http://localhost:$SONARQUBE_PORT
+        with:
+          args: >
+            -Dsonar.projectKey=frontend
+            -Dsonar.projectName=Frontend
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
+            -Dsonar.qualitygate.wait=true
 
   build-and-push:
-    needs: unit-tests  # Attend les tests ET l'analyse Sonar
+    needs: sonarqube-analysis
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
@@ -123,7 +161,6 @@ jobs:
           docker push $DOCKER_IMAGE:latest
           docker push $DOCKER_IMAGE:$GITHUB_SHA
 
-  # [Les autres jobs restent identiques...]
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
@@ -193,7 +230,7 @@ jobs:
           echo "CURRENT_REVISION=$CURRENT_REVISION" >> $GITHUB_ENV
           echo "Révision actuelle sauvegardée: $CURRENT_REVISION"
 
-      - name: 🚀 Déploiement K8s
+      - name: 🚀 Déploiement K8s (Production)
         run: |
           kubectl apply -f $K8S_FRONTEND_PATH/namespace.yaml
           
@@ -203,13 +240,20 @@ jobs:
           envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
           kubectl apply -f $K8S_FRONTEND_PATH/service.yaml
 
+      - name: 🚀 Déploiement Canary
+        run: |
+          export DOCKER_IMAGE=$DOCKER_IMAGE
+          export TAG=$GITHUB_SHA
+          envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/canary-strategy-complete.yaml | kubectl apply -f -
+
       - name: 🔍 Vérification déploiement
         id: verify-deployment
         run: |
           if kubectl wait --for=condition=available deployment/frontend-deployment -n frontend --timeout=300s; then
             echo "status=success" >> $GITHUB_OUTPUT
             kubectl get pods,svc -n frontend -o wide
-            echo "Application disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+            echo "Application Production disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+            echo "Application Canary disponible sur: http://$(hostname -I | awk '{print $1}'):$CANARY_PORT"
           else
             echo "status=failure" >> $GITHUB_OUTPUT
             echo "::error::Échec de la vérification du déploiement"
@@ -220,6 +264,7 @@ jobs:
         run: |
           echo "::error::Lancement du rollback à la révision ${{ env.CURRENT_REVISION }}"
           kubectl rollout undo deployment/frontend-deployment -n frontend --to-revision=${{ env.CURRENT_REVISION }}
+          kubectl delete -f $K8S_FRONTEND_PATH/canary-strategy-complete.yaml --ignore-not-found
           
           echo "Vérification du rollback..."
           kubectl rollout status deployment/frontend-deployment -n frontend --timeout=180s
@@ -227,6 +272,21 @@ jobs:
           echo "État après rollback:"
           kubectl get pods -n frontend
           exit 1
+
+      - name: 🕵️ Vérification Canary
+        if: steps.verify-deployment.outputs.status == 'success'
+        run: |
+          echo "=== Vérification du déploiement Canary ==="
+          kubectl wait --for=condition=available deployment/frontend-canary -n frontend --timeout=120s
+          
+          echo "=== Test d'accès Canary ==="
+          CANARY_URL="http://$(hostname -I | awk '{print $1}'):$CANARY_PORT"
+          if curl -sSf $CANARY_URL >/dev/null; then
+            echo "Canary est accessible avec succès: $CANARY_URL"
+          else
+            echo "::error::Échec d'accès au Canary"
+            exit 1
+          end
 
       - name: 🐳 Déploiement Portainer
         if: steps.verify-deployment.outputs.status == 'success'
@@ -316,5 +376,6 @@ jobs:
           echo "-----------------"
           echo "Identifiants Grafana : Voir les secrets GitHub"
           echo "=== ACCÈS APPLICATION ==="
-          echo "Frontend      : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+          echo "Frontend (Production) : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+          echo "Frontend (Canary)    : http://$(hostname -I | awk '{print $1}'):$CANARY_PORT"
           echo "Portainer     : http://$(hostname -I | awk '{print $1}'):$PORTAINER_PORT"

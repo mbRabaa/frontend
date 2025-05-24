@@ -33,7 +33,6 @@ Le frontend est développé avec React, TypeScript et Tailwind CSS. Il offre une
 
 Ce microservice gère:
 - La création de nouvelles réservations
-- La modification des réservations existantes
 - L'annulation des réservations
 - La consultation des détails des trajets disponibles
 
@@ -43,22 +42,19 @@ Ce microservice s'occupe de:
 - Traiter les paiements par carte bancaire
 - Gérer les virements bancaires
 - Émettre des confirmations de paiement
-- Gérer les remboursements en cas d'annulation
 
 ### API Gateway
 
 L'API Gateway sert de point d'entrée unique pour toutes les requêtes clients et se charge de:
 - Router les requêtes vers les microservices appropriés
-- Gérer l'authentification et l'autorisation
 - Assurer la communication entre les différents microservices
 
 ## Fonctionnalités Principales
 
 - **Recherche de Trajets**: Recherche par origine, destination et date
-- **Réservation de Billets**: Formulaire simple pour réserver un ou plusieurs sièges
+- **Réservation de Billets**: Formulaire simple pour réserver 
 - **Paiement en Ligne**: Options de paiement sécurisées (carte de crédit, carte de débit, virement)
-- **Gestion des Réservations**: Possibilité de consulter, modifier ou annuler des réservations
-- **Interface Multilingue**: Support pour le français, l'anglais et l'arabe
+
 
 ## Installation et Exécution
 
@@ -94,11 +90,6 @@ npm install
 npm start
 ```
 
-## Déploiement avec Docker
-
-```bash
-docker-compose up --build
-```
 
 ## Technologies Utilisées
 
@@ -108,12 +99,4 @@ docker-compose up --build
 - **Conteneurisation**: Docker
 - **API Gateway**: Express Gateway
 
-## Contribution
 
-Les contributions sont les bienvenues. Veuillez consulter le guide de contribution avant de soumettre une pull request.
-
-## Licence
-
-[Spécifiez votre licence]
-```
-"# frontend" 
