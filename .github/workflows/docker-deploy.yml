@@ -23,6 +23,7 @@ env:
   SONARQUBE_PORT: 9000
   SONARQUBE_VERSION: 10.4.1-community
   SONAR_ADMIN_PASSWORD: ${{ secrets.SONARQUBE_ADMIN_PASSWORD }}
+  SONARQUBE_FULL_URL: http://localhost:9000
   
   # Configuration Portainer
   PORTAINER_USER: admin
@@ -101,7 +102,7 @@ jobs:
   sonarqube-analysis:
     needs: unit-tests
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: 🛎 Checkout du code
         uses: actions/checkout@v3
@@ -120,15 +121,16 @@ jobs:
             sonarqube:$SONARQUBE_VERSION
           
           echo "En attente du démarrage de SonarQube..."
-          while ! curl -sSf "http://localhost:$SONARQUBE_PORT/api/system/status" | grep -q '"status":"UP"'; do
+          while ! curl -sSf "$SONARQUBE_FULL_URL/api/system/status" | grep -q '"status":"UP"'; do
             sleep 10
           done
+          echo "SonarQube est prêt!"
 
       - name: 📊 Exécuter l'analyse SonarQube
         uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
-          SONAR_HOST_URL: http://localhost:$SONARQUBE_PORT
+          SONAR_HOST_URL: $SONARQUBE_FULL_URL
         with:
           args: >
             -Dsonar.projectKey=frontend
@@ -136,6 +138,12 @@ jobs:
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
             -Dsonar.login=${{ secrets.SONARQUBE_TOKEN }}
             -Dsonar.qualitygate.wait=true
+
+      - name: 🏷️ Tag du commit avec le résultat SonarQube
+        if: success()
+        run: |
+          echo "Analysis succeeded - would tag commit here"
+          # Vous pouvez ajouter un tagging Git si nécessaire
 
   build-and-push:
     needs: sonarqube-analysis
@@ -286,7 +294,7 @@ jobs:
           else
             echo "::error::Échec d'accès au Canary"
             exit 1
-          end
+          fi
 
       - name: 🐳 Déploiement Portainer
         if: steps.verify-deployment.outputs.status == 'success'
