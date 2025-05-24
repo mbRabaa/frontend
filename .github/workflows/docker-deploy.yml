@@ -1,4 +1,4 @@
-name:  Chaine CI/CD Complète
+name: CI/CD Complète
 
 on:
   push:
