@@ -2,9 +2,8 @@
 FROM node:18 AS builder
 WORKDIR /app
 
-# 1. Copie des fichiers de dépendances
+# 1. Copie des fichiers de dépendances (supprimez .npmrc si vous ne l'utilisez pas)
 COPY package*.json ./
-COPY .npmrc ./
 
 # 2. Installation des dépendances Y COMPRIS les devDependencies
 RUN npm install --include=dev
