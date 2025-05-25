@@ -54,6 +54,7 @@ jobs:
         run: |
           npm ci --prefer-offline
           npm install -D @vitest/coverage-v8
+          npm install vite @vitejs/plugin-react
 
       - name: 🛠️ Builder l'application
         run: |
