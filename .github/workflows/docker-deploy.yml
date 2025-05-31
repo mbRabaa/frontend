@@ -377,6 +377,11 @@ jobs:
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
 
+      - name: 📥 Télécharger les fichiers de configuration
+        uses: actions/checkout@v4
+        with:
+          path: config-files
+
       - name: ⎈ Installer la stack monitoring
         run: |
           kubectl create namespace monitoring || true
@@ -390,7 +395,16 @@ jobs:
             --set grafana.service.type=NodePort \
             --set grafana.service.nodePort=$GRAFANA_PORT \
             --set alertmanager.service.type=NodePort \
-            --set alertmanager.service.nodePort=$ALERTMANAGER_PORT
+            --set alertmanager.service.nodePort=$ALERTMANAGER_PORT \
+            --set-file alertmanager.configFile=config-files/alert-config.yaml \
+            --set-file serverFiles."prometheus\.yml\.alerts"=config-files/infra-alert.yaml \
+            --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
+            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
+
+      - name: 🔍 Vérifier la configuration
+        run: |
+          kubectl -n monitoring get configmap monitoring-kube-prometheus-alertmanager -o jsonpath='{.data.alertmanager\.yml}' | yq eval -P
+          kubectl -n monitoring get configmap monitoring-kube-prometheus-prometheus-rulefiles-0 -o jsonpath='{.data.*}' | yq eval -P
 
       - name: 🌐 Afficher les accès
         run: |
@@ -399,7 +413,7 @@ jobs:
           echo "Prometheus    : http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT"
           echo "AlertManager  : http://$(hostname -I | awk '{print $1}'):$ALERTMANAGER_PORT"
           echo "-----------------"
-          echo "Identifiants Grafana : Voir les secrets GitHub"
+          echo "Identifiants Grafana : ${{ secrets.GRAFANA_ADMIN_USER }} / ${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
           echo "=== ACCÈS APPLICATION ==="
           echo "Frontend (Production) : http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
           echo "Frontend (Canary)    : http://$(hostname -I | awk '{print $1}'):$CANARY_PORT"
