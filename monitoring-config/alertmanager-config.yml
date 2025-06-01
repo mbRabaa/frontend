@@ -1,32 +1,30 @@
 global:
   resolve_timeout: 5m
-  smtp_from: '${{ secrets.SMTP_USER }}'
+  smtp_from: '${{ secrets.SMTP_FROM }}'
   smtp_smarthost: 'smtp.gmail.com:587'
   smtp_auth_username: '${{ secrets.SMTP_USER }}'
-  smtp_auth_password: ${{ secrets.SMTP_PASSWORD }}'   # Utilisez un mot de passe d'application Gmail
+  smtp_auth_password: '${{ secrets.SMTP_PASSWORD }}'
   smtp_require_tls: true
 
 route:
-  receiver: 'email-team'
-  group_by: ['alertname', 'cluster']
+  receiver: 'gmail-team'
+  group_by: ['alertname', 'severity']
   group_wait: 30s
   group_interval: 5m
-  repeat_interval: 1h
-  routes:
-  - match:
-      severity: 'critical'
-    receiver: 'email-team-critical'
+  repeat_interval: 2h
 
 receivers:
-- name: 'email-team'
+- name: 'gmail-team'
   email_configs:
-  - to: 'dev-team@yourdomain.com'
+  - to: 'elmbarkirabea@gmail.com'
     send_resolved: true
-
-- name: 'email-team-critical'
-  email_configs:
-  - to: 'oncall-team@yourdomain.com'
-    send_resolved: true
-  webhook_configs:
-  - url: 'http://slack-webhook-url'
-    send_resolved: true
+    headers:
+      Subject: '[ALERT] {{ .CommonLabels.severity }}: {{ .CommonLabels.alertname }}'
+    html: |
+      <h2 style="color: {{ if eq .Status "firing" }}#d63232{{ else }}#2e7d32{{ end }};">
+        {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}
+      </h2>
+      <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
+      <p><strong>Instance:</strong> {{ .CommonLabels.instance }}</p>
+      <p><strong>Description:</strong> {{ .CommonAnnotations.description }}</p>
+      <p><strong>Timestamp:</strong> {{ .StartsAt }}</p>
