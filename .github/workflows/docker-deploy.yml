@@ -396,8 +396,8 @@ jobs:
             --set grafana.service.nodePort=$GRAFANA_PORT \
             --set alertmanager.service.type=NodePort \
             --set alertmanager.service.nodePort=$ALERTMANAGER_PORT \
-            --set-file alertmanager.configFile=config-files/alert-config.yaml \
-            --set-file serverFiles."prometheus\.yml\.alerts"=config-files/infra-alert.yaml \
+            --set-file alertmanager.configFile=monitoring-config/alertmanager-config.yml \
+            --set-file serverFiles."prometheus\.yml\.alerts"=monitoring-config/infra-alerts.yml \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
 
