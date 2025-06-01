@@ -1,30 +1,22 @@
 global:
   resolve_timeout: 5m
-  smtp_from: '${{ secrets.SMTP_FROM }}'
+  smtp_from: '${{ secrets.SMTP_USER }}'
   smtp_smarthost: 'smtp.gmail.com:587'
   smtp_auth_username: '${{ secrets.SMTP_USER }}'
   smtp_auth_password: '${{ secrets.SMTP_PASSWORD }}'
   smtp_require_tls: true
 
 route:
-  receiver: 'gmail-team'
-  group_by: ['alertname', 'severity']
+  receiver: 'email-team'
+  group_by: ['alertname']
   group_wait: 30s
   group_interval: 5m
-  repeat_interval: 2h
+  repeat_interval: 1h
 
 receivers:
-- name: 'gmail-team'
+- name: 'email-team'
   email_configs:
-  - to: 'elmbarkirabea@gmail.com'
+  - to: '${{ secrets.SMTP_USER }}'
     send_resolved: true
     headers:
-      Subject: '[ALERT] {{ .CommonLabels.severity }}: {{ .CommonLabels.alertname }}'
-    html: |
-      <h2 style="color: {{ if eq .Status "firing" }}#d63232{{ else }}#2e7d32{{ end }};">
-        {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}
-      </h2>
-      <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
-      <p><strong>Instance:</strong> {{ .CommonLabels.instance }}</p>
-      <p><strong>Description:</strong> {{ .CommonAnnotations.description }}</p>
-      <p><strong>Timestamp:</strong> {{ .StartsAt }}</p>
+      Subject: '[ALERT] {{ .CommonLabels.alertname }}'
