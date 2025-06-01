@@ -401,10 +401,6 @@ jobs:
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
 
-      - name: 🔍 Vérifier la configuration
-        run: |
-          kubectl -n monitoring get configmap monitoring-kube-prometheus-alertmanager -o jsonpath='{.data.alertmanager\.yml}' | yq eval -P
-          kubectl -n monitoring get configmap monitoring-kube-prometheus-prometheus-rulefiles-0 -o jsonpath='{.data.*}' | yq eval -P
 
       - name: 🌐 Afficher les accès
         run: |
