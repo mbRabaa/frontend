@@ -2,7 +2,7 @@
 FROM node:18 AS builder
 WORKDIR /app
 
-# 1. Copie des fichiers de dépendances (supprimez .npmrc si vous ne l'utilisez pas)
+# 1. Copie des fichiers de dépendances 
 COPY package*.json ./
 
 # 2. Installation des dépendances Y COMPRIS les devDependencies

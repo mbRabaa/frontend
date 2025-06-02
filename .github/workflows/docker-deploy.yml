@@ -1,4 +1,4 @@
-name:   CI/CD Complète
+name: CI/CD Complète
 
 on:
   push:
@@ -37,6 +37,7 @@ env:
   # alertmanager
   SMTP_USER: ${{ secrets.SMTP_USER }}
   SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+
 jobs:
   build-app:
     runs-on: self-hosted
@@ -389,8 +390,8 @@ jobs:
         run: |
           # Créer un fichier de config temporaire avec les secrets interpolés
           sed \
-            -e "s|\${{ secrets.SMTP_USER }}|$SMTP_USER|g" \
-            -e "s|\${{ secrets.SMTP_PASSWORD }}|$SMTP_PASSWORD|g" \
+            -e "s|\${{ secrets.SMTP_USER }}|${{ secrets.SMTP_USER }}|g" \
+            -e "s|\${{ secrets.SMTP_PASSWORD }}|${{ secrets.SMTP_PASSWORD }}|g" \
             monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
 
           kubectl create namespace monitoring || true
@@ -410,7 +411,6 @@ jobs:
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
             --set alertmanager.enabled=true
-      
 
       - name: 🔍 Vérifier la configuration déployée
         run: |
