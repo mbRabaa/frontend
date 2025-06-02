@@ -1,4 +1,4 @@
-name: chaine CI/CD Complète
+name:   CI/CD Complète
 
 on:
   push:
@@ -37,7 +37,6 @@ env:
   # alertmanager
   SMTP_USER: ${{ secrets.SMTP_USER }}
   SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-
 jobs:
   build-app:
     runs-on: self-hosted
@@ -58,7 +57,6 @@ jobs:
         run: |
           npm ci --prefer-offline
           npm install -D @vitest/coverage-v8
-
       - name: 🛠️ Builder l'application
         run: |
           npm run build
@@ -68,7 +66,6 @@ jobs:
           [ -f "coverage/lcov.info" ] || exit 1
           echo "=== Build généré ==="
           ls -lh dist/
-
       - name: 📦 Sauvegarder les artefacts
         uses: actions/upload-artifact@v4
         with:
@@ -129,7 +126,6 @@ jobs:
               -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
               sonarqube:${{ env.SONARQUBE_VERSION }}
           fi
-
       - name: ⏳ Attendre que SonarQube soit prêt
         run: |
           for i in {1..30}; do
@@ -142,7 +138,6 @@ jobs:
           done
           echo "❌ SonarQube n'a pas démarré dans le délai imparti"
           exit 1
-
       - name: 🔍 Exécuter l'analyse SonarQube
         uses: SonarSource/sonarqube-scan-action@v4
         env:
@@ -158,14 +153,12 @@ jobs:
             -Dsonar.sourceEncoding=UTF-8
             -Dsonar.qualitygate.wait=true
             -Dsonar.login=${{ secrets.SONAR_TOKEN }}
-
       - name: 📌 Afficher les résultats
         run: |
           echo "=========================================="
           echo "🔍 Analyse SonarQube terminée avec succès !"
           echo "🌐 Accès : ${{ secrets.SONAR_HOST_URL }}/dashboard?id=Frontend_project"
           echo "=========================================="
-
   build-and-push:
     needs: sonarqube-analysis
     runs-on: self-hosted
@@ -189,7 +182,6 @@ jobs:
           
           docker push $DOCKER_IMAGE:latest
           docker push $DOCKER_IMAGE:$GITHUB_SHA
-
   deploy-docker:
     needs: build-and-push
     runs-on: self-hosted
@@ -202,7 +194,6 @@ jobs:
         run: |
           docker stop $CONTAINER_NAME || true
           docker rm -f $CONTAINER_NAME || true
-
       - name: 🚀 Déploiement
         run: |
           docker pull $DOCKER_IMAGE:latest
@@ -212,13 +203,11 @@ jobs:
             --restart unless-stopped \
             -e NODE_ENV=production \
             $DOCKER_IMAGE:latest
-
       - name: ✅ Vérification
         run: |
           sleep 15
           curl -sSf http://localhost:$PORT/ || exit 1
           echo "Déploiement Docker réussi!"
-
   deploy-k3s:
     needs: deploy-docker
     runs-on: self-hosted
@@ -240,7 +229,6 @@ jobs:
             --disable traefik \
             --node-ip $(hostname -I | awk '{print $1}') \
             --docker
-
       - name: 🔧 Configuration kubectl
         run: |
           mkdir -p ~/.kube
@@ -251,14 +239,12 @@ jobs:
           
           kubectl cluster-info
           kubectl get nodes -o wide
-
       - name: 📌 Sauvegarde révision actuelle
         id: save-revision
         run: |
           CURRENT_REVISION=$(kubectl get deployment frontend-deployment -n frontend -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "0")
           echo "CURRENT_REVISION=$CURRENT_REVISION" >> $GITHUB_ENV
           echo "Révision actuelle sauvegardée: $CURRENT_REVISION"
-
       - name: 🚀 Déploiement K8s (Production)
         run: |
           kubectl apply -f $K8S_FRONTEND_PATH/namespace.yaml
@@ -268,13 +254,11 @@ jobs:
           
           envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
           kubectl apply -f $K8S_FRONTEND_PATH/service.yaml
-
       - name: 🚀 Déploiement Canary
         run: |
           export DOCKER_IMAGE=$DOCKER_IMAGE
           export TAG=$GITHUB_SHA
           envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/canary-strategy-complete.yaml | kubectl apply -f -
-
       - name: 🔍 Vérification déploiement
         id: verify-deployment
         run: |
@@ -287,7 +271,6 @@ jobs:
             echo "status=failure" >> $GITHUB_OUTPUT
             echo "::error::Échec de la vérification du déploiement"
           fi
-
       - name: 🔄 Rollback si échec
         if: steps.verify-deployment.outputs.status == 'failure'
         run: |
@@ -301,7 +284,6 @@ jobs:
           echo "État après rollback:"
           kubectl get pods -n frontend
           exit 1
-
       - name: 🕵️ Vérification Canary
         if: steps.verify-deployment.outputs.status == 'success'
         run: |
@@ -316,7 +298,6 @@ jobs:
             echo "::error::Échec d'accès au Canary"
             exit 1
           fi
-
       - name: 🐳 Déploiement Portainer
         if: steps.verify-deployment.outputs.status == 'success'
         run: |
@@ -368,7 +349,6 @@ jobs:
             }'
             
           echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
-
   cluster-monitoring:
     needs: deploy-k3s
     runs-on: self-hosted
@@ -380,69 +360,44 @@ jobs:
           sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
           sudo chown $USER:$USER ~/.kube/config
           sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-
       - name: 📥 Télécharger les fichiers de configuration
         uses: actions/checkout@v4
         with:
-          path: monitoring-config
+          path: config-files
 
       - name: ⎈ Installer la stack monitoring
         run: |
-          # 1. Vérifier la présence des fichiers de configuration
-          if [ ! -f "monitoring-config/alertmanager-config.yml" ]; then
-            echo "Erreur: Fichier alertmanager-config.yml manquant dans monitoring-config/"
-            exit 1
-          fi
-
-          if [ ! -f "monitoring-config/infra-alerts.yml" ]; then
-            echo "Erreur: Fichier infra-alerts.yml manquant dans monitoring-config/"
-            exit 1
-          fi
-
-          # 2. Nettoyer les installations précédentes (ignore les erreurs)
-          helm uninstall monitoring -n monitoring 2>/dev/null || true
-          kubectl delete secret -n monitoring alertmanager-monitoring-kube-prometheus-alertmanager-generated 2>/dev/null || true
-          
-          # 3. Créer le secret de configuration AlertManager
-          kubectl -n monitoring create secret generic alertmanager-monitoring-kube-prometheus-alertmanager-generated \
-            --from-file=alertmanager.yaml=monitoring-config/alertmanager-config.yml
-
-          # 4. Installer la stack avec configuration forcée
+          # Créer un fichier de config temporaire avec les secrets interpolés
+          sed \
+            -e "s|\${{ secrets.SMTP_USER }}|$SMTP_USER|g" \
+            -e "s|\${{ secrets.SMTP_PASSWORD }}|$SMTP_PASSWORD|g" \
+            monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
+          kubectl create namespace monitoring || true
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
-            --create-namespace \
-            --version 45.7.1 \
-            --set alertmanager.enabled=true \
-            --set alertmanager.alertmanagerSpec.useExistingSecret=true \
-            --set alertmanager.configFromSecret="alertmanager-monitoring-kube-prometheus-alertmanager-generated" \
-            --set alertmanager.service.type=NodePort \
-            --set alertmanager.service.nodePort=$ALERTMANAGER_PORT \
             --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
             --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
-            --set grafana.service.type=NodePort \
-            --set grafana.service.nodePort=$GRAFANA_PORT \
             --set prometheus.service.type=NodePort \
             --set prometheus.service.nodePort=$PROMETHEUS_PORT \
+            --set grafana.service.type=NodePort \
+            --set grafana.service.nodePort=$GRAFANA_PORT \
+            --set alertmanager.service.type=NodePort \
+            --set alertmanager.service.nodePort=$ALERTMANAGER_PORT \
+            --set-file alertmanager.configFile=alertmanager-resolved.yml \
+            --set-file serverFiles."prometheus\.yml\.alerts"=monitoring-config/infra-alerts.yml \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
-            --set-file serverFiles."prometheus\.yml\.alerts"=monitoring-config/infra-alerts.yml
-
-      - name: ⏳ Attendre que les pods soient prêts
-        run: |
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=alertmanager -n monitoring --timeout=300s
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n monitoring --timeout=300s
+            --set alertmanager.enabled=true
+      
 
       - name: 🔍 Vérifier la configuration déployée
         run: |
           echo "=== Configuration AlertManager ==="
           kubectl -n monitoring get secret alertmanager-monitoring-kube-prometheus-alertmanager-generated -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d
           
-          echo "=== Logs AlertManager ==="
-          kubectl -n monitoring logs -l app.kubernetes.io/name=alertmanager --tail=50
-          
           echo "=== État des pods ==="
-          kubectl -n monitoring get pods -o wide
-
+          kubectl -n monitoring get pods
       - name: 🌐 Afficher les accès
         run: |
           echo "=== MONITORING ==="
