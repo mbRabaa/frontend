@@ -1,4 +1,4 @@
-name:   CI/CD Complète
+name: CI/CD Complète
 
 on:
   push:
@@ -37,6 +37,7 @@ env:
   # alertmanager
   SMTP_USER: ${{ secrets.SMTP_USER }}
   SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+
 jobs:
   build-app:
     runs-on: self-hosted
@@ -383,42 +384,64 @@ jobs:
       - name: 📥 Télécharger les fichiers de configuration
         uses: actions/checkout@v4
         with:
-          path: config-files
+          path: monitoring-config
 
       - name: ⎈ Installer la stack monitoring
         run: |
-          # Créer un fichier de config temporaire avec les secrets interpolés
-          sed \
-            -e "s|\${{ secrets.SMTP_USER }}|$SMTP_USER|g" \
-            -e "s|\${{ secrets.SMTP_PASSWORD }}|$SMTP_PASSWORD|g" \
-            monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
+          # 1. Vérifier la présence des fichiers de configuration
+          if [ ! -f "monitoring-config/alertmanager-config.yml" ]; then
+            echo "Erreur: Fichier alertmanager-config.yml manquant dans monitoring-config/"
+            exit 1
+          fi
 
-          kubectl create namespace monitoring || true
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          if [ ! -f "monitoring-config/infra-alerts.yml" ]; then
+            echo "Erreur: Fichier infra-alerts.yml manquant dans monitoring-config/"
+            exit 1
+          fi
+
+          # 2. Nettoyer les installations précédentes (ignore les erreurs)
+          helm uninstall monitoring -n monitoring 2>/dev/null || true
+          kubectl delete secret -n monitoring alertmanager-monitoring-kube-prometheus-alertmanager-generated 2>/dev/null || true
+          
+          # 3. Créer le secret de configuration AlertManager
+          kubectl -n monitoring create secret generic alertmanager-monitoring-kube-prometheus-alertmanager-generated \
+            --from-file=alertmanager.yaml=monitoring-config/alertmanager-config.yml
+
+          # 4. Installer la stack avec configuration forcée
           helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
-            --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
-            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
-            --set prometheus.service.type=NodePort \
-            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
-            --set grafana.service.type=NodePort \
-            --set grafana.service.nodePort=$GRAFANA_PORT \
+            --create-namespace \
+            --version 45.7.1 \
+            --set alertmanager.enabled=true \
+            --set alertmanager.alertmanagerSpec.useExistingSecret=true \
+            --set alertmanager.configFromSecret="alertmanager-monitoring-kube-prometheus-alertmanager-generated" \
             --set alertmanager.service.type=NodePort \
             --set alertmanager.service.nodePort=$ALERTMANAGER_PORT \
-            --set-file alertmanager.configFile=alertmanager-resolved.yml \
-            --set-file serverFiles."prometheus\.yml\.alerts"=monitoring-config/infra-alerts.yml \
+            --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
+            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --set grafana.service.type=NodePort \
+            --set grafana.service.nodePort=$GRAFANA_PORT \
+            --set prometheus.service.type=NodePort \
+            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
-            --set alertmanager.enabled=true
-      
+            --set-file serverFiles."prometheus\.yml\.alerts"=monitoring-config/infra-alerts.yml
+
+      - name: ⏳ Attendre que les pods soient prêts
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=alertmanager -n monitoring --timeout=300s
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n monitoring --timeout=300s
 
       - name: 🔍 Vérifier la configuration déployée
         run: |
           echo "=== Configuration AlertManager ==="
           kubectl -n monitoring get secret alertmanager-monitoring-kube-prometheus-alertmanager-generated -o jsonpath='{.data.alertmanager\.yaml}' | base64 -d
           
+          echo "=== Logs AlertManager ==="
+          kubectl -n monitoring logs -l app.kubernetes.io/name=alertmanager --tail=50
+          
           echo "=== État des pods ==="
-          kubectl -n monitoring get pods
+          kubectl -n monitoring get pods -o wide
 
       - name: 🌐 Afficher les accès
         run: |
