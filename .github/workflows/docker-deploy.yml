@@ -198,7 +198,7 @@ jobs:
       - name: 🔑 Authentification Docker
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
-      - name: � Nettoyage
+      - name: 🧹 Nettoyage
         run: |
           docker stop $CONTAINER_NAME || true
           docker rm -f $CONTAINER_NAME || true
@@ -383,26 +383,24 @@ jobs:
 
       - name: 📥 Télécharger les fichiers de configuration
         uses: actions/checkout@v4
-        with:
-          path: monitoring-config
 
       - name: 🛠️ Déployer AlertManager (sans Helm)
         run: |
           # Créer le namespace si inexistant
-          kubectl create namespace monitoring || true
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
           # Créer la configuration AlertManager avec interpolation des secrets
           sed \
             -e "s|\${{ secrets.SMTP_USER }}|${{ secrets.SMTP_USER }}|g" \
             -e "s|\${{ secrets.SMTP_PASSWORD }}|${{ secrets.SMTP_PASSWORD }}|g" \
-            monitoring-config/monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
+            monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
 
           # Créer le secret de configuration
           kubectl -n monitoring create secret generic alertmanager-config \
             --from-file=alertmanager.yml=alertmanager-resolved.yml \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          # Déployer AlertManager avec un simple Deployment
+          # Déployer AlertManager
           kubectl apply -f - <<EOF
           apiVersion: apps/v1
           kind: Deployment
@@ -471,11 +469,49 @@ jobs:
 
       - name: 🚨 Déployer les alertes du cluster
         run: |
-         
-          # Appliquer les règles d'alerte
-          kubectl apply -f monitoring-config/cluster-alerts.yml -n monitoring
+          # Appliquer les règles d'alerte intégrées
+          kubectl apply -n monitoring -f - <<EOF
+          apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: cluster-alerts
+            namespace: monitoring
+          spec:
+            groups:
+            - name: cluster-health
+              rules:
+              - alert: NodeDown
+                expr: up == 0
+                for: 1m
+                labels:
+                  severity: critical
+                  service: infrastructure
+                annotations:
+                  summary: "Node {{ \$labels.instance }} is down"
+                  description: "Le noeud {{ \$labels.instance }} ne répond pas depuis 1 minute"
 
-          # Vérifier le déploiement des règles
+              - alert: HighMemoryUsage
+                expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+                for: 5m
+                labels:
+                  severity: warning
+                  service: infrastructure
+                annotations:
+                  summary: "High memory usage on {{ \$labels.instance }}"
+                  description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
+
+              - alert: HighCPUUsage
+                expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+                for: 5m
+                labels:
+                  severity: warning
+                  service: infrastructure
+                annotations:
+                  summary: "High CPU usage on {{ \$labels.instance }}"
+                  description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
+          EOF
+
+          # Vérifier le déploiement
           echo "=== Règles déployées ==="
           kubectl get prometheusrules -n monitoring -o wide
           echo "=== Détails des règles ==="
@@ -483,60 +519,54 @@ jobs:
 
       - name: 🔍 Vérifier la configuration
         run: |
-          # Vérifier la configuration AlertManager
+          # Vérifier AlertManager
           echo "=== Configuration AlertManager ==="
-          kubectl -n monitoring exec alertmanager-monitoring-kube-prometheus-alertmanager-0 -- \
-            cat /etc/alertmanager/alertmanager.yml
+          kubectl -n monitoring exec deploy/alertmanager -- cat /etc/alertmanager/alertmanager.yml
 
-          # Vérifier les alertes actives dans Prometheus
-          echo "=== Alertes dans Prometheus ==="
+          # Vérifier les alertes dans Prometheus
+          echo "=== Alertes actives ==="
           PROM_POD=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
           kubectl -n monitoring exec $PROM_POD -- \
             curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | .labels.alertname'
 
       - name: 📩 Tester les notifications
         run: |
-          # Envoyer une alerte de test
           echo "=== Envoi d'une alerte test ==="
-          kubectl -n monitoring exec alertmanager-monitoring-kube-prometheus-alertmanager-0 -- \
+          kubectl -n monitoring exec deploy/alertmanager -- \
             amtool alert add \
             alertname="IntegrationTestAlert" \
             severity="critical" \
             --annotation=summary="Test d'intégration" \
             --annotation=description="Ceci est un test de notification par email"
 
-          # Vérifier que l'alerte a été traitée
           sleep 10
           echo "=== Dernières alertes ==="
-          kubectl -n monitoring exec alertmanager-monitoring-kube-prometheus-alertmanager-0 -- \
-            amtool alert query
+          kubectl -n monitoring exec deploy/alertmanager -- amtool alert query
 
       - name: 🔍 Vérifier les déploiements
         run: |
-          echo "=== Pods AlertManager ==="
-          kubectl -n monitoring get pods -l app=alertmanager
+          echo "=== État du cluster ==="
+          kubectl get pods,svc -n monitoring
           echo "=== Logs AlertManager ==="
-          kubectl -n monitoring logs -l app=alertmanager --tail=50
-          echo "=== Services ==="
-          kubectl -n monitoring get svc
+          kubectl logs -n monitoring -l app=alertmanager --tail=50
 
       - name: 🌐 Afficher les accès
         run: |
           CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          echo "================================================"
-          echo "🔔 NOTIFICATIONS ALERTMANAGER CONFIGURÉES 🔔"
-          echo "================================================"
-          echo ""
-          echo "📊 Accès aux interfaces :"
-          echo "- Prometheus    : http://$CLUSTER_IP:30090"
-          echo "- AlertManager  : http://$CLUSTER_IP:$ALERTMANAGER_PORT"
-          echo "- Grafana       : http://$CLUSTER_IP:$GRAFANA_PORT"
-          echo ""
-          echo "🔑 Identifiants Grafana :"
-          echo "- Utilisateur : ${{ secrets.GRAFANA_ADMIN_USER }}"
-          echo "- Mot de passe : ${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
-          echo ""
-          echo "📧 Notifications envoyées à : ${{ secrets.SMTP_USER }}"
-          echo ""
-          echo "ℹ️ Pour vérifier les emails, consultez la boîte de réception de ${{ secrets.SMTP_USER }}"
-          echo "================================================"
+          cat <<EOF
+          ================================================
+          🔔 MONITORING STACK OPÉRATIONNEL
+          ================================================
+          
+          📊 Accès aux interfaces :
+          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
+          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
+          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
+          
+          🔑 Identifiants Grafana:
+          - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}
+          - Mot de passe: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          
+          📧 Notifications envoyées à: ${{ secrets.SMTP_USER }}
+          ================================================
+          EOF
