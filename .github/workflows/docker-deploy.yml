@@ -198,7 +198,7 @@ jobs:
       - name: 🔑 Authentification Docker
         run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
 
-      - name: 🧹 Nettoyage
+      - name: � Nettoyage
         run: |
           docker stop $CONTAINER_NAME || true
           docker rm -f $CONTAINER_NAME || true
@@ -469,6 +469,73 @@ jobs:
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
 
+      - name: 🛠️ Configurer AlertManager
+        run: |
+          # Vérifier et créer le namespace si nécessaire
+          kubectl create namespace monitoring || true
+
+          # Vérifier que le fichier de configuration existe
+          if [ ! -f "monitoring-config/alertmanager-config.yml" ]; then
+            echo "❌ Fichier alertmanager-config.yml manquant dans monitoring-config/"
+            exit 1
+          fi
+
+          # Appliquer la configuration AlertManager
+          kubectl -n monitoring create secret generic alertmanager-config \
+            --from-file=alertmanager.yml=monitoring-config/alertmanager-config.yml \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Redémarrer AlertManager pour appliquer les changements
+          kubectl -n monitoring rollout restart statefulset/alertmanager-monitoring-kube-prometheus-alertmanager
+          kubectl -n monitoring wait --for=condition=ready pod -l app.kubernetes.io/name=alertmanager --timeout=180s
+
+      - name: 🚨 Déployer les alertes du cluster
+        run: |
+          # Vérifier que le fichier d'alertes existe
+          if [ ! -f "monitoring-config/cluster-alerts.yml" ]; then
+            echo "❌ Fichier cluster-alerts.yml manquant dans monitoring-config/"
+            exit 1
+          fi
+
+          # Appliquer les règles d'alerte
+          kubectl apply -f monitoring-config/cluster-alerts.yml -n monitoring
+
+          # Vérifier le déploiement des règles
+          echo "=== Règles déployées ==="
+          kubectl get prometheusrules -n monitoring -o wide
+          echo "=== Détails des règles ==="
+          kubectl describe prometheusrules -n monitoring
+
+      - name: 🔍 Vérifier la configuration
+        run: |
+          # Vérifier la configuration AlertManager
+          echo "=== Configuration AlertManager ==="
+          kubectl -n monitoring exec alertmanager-monitoring-kube-prometheus-alertmanager-0 -- \
+            cat /etc/alertmanager/alertmanager.yml
+
+          # Vérifier les alertes actives dans Prometheus
+          echo "=== Alertes dans Prometheus ==="
+          PROM_POD=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n monitoring exec $PROM_POD -- \
+            curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | .labels.alertname'
+
+      - name: 📩 Tester les notifications
+        run: |
+          # Envoyer une alerte de test
+          echo "=== Envoi d'une alerte test ==="
+          kubectl -n monitoring exec alertmanager-monitoring-kube-prometheus-alertmanager-0 -- \
+            amtool alert add \
+            alertname="IntegrationTestAlert" \
+            severity="critical" \
+            --annotation=summary="Test d'intégration" \
+            --annotation=description="Ceci est un test de notification par email"
+
+          # Vérifier que l'alerte a été traitée
+          sleep 10
+          echo "=== Dernières alertes ==="
+          kubectl -n monitoring exec alertmanager-monitoring-kube-prometheus-alertmanager-0 -- \
+            amtool alert query
+
       - name: 🔍 Vérifier les déploiements
         run: |
           echo "=== Pods AlertManager ==="
@@ -480,9 +547,21 @@ jobs:
 
       - name: 🌐 Afficher les accès
         run: |
-          echo "=== MONITORING ==="
-          echo "Grafana       : http://$(hostname -I | awk '{print $1}'):$GRAFANA_PORT"
-          echo "Prometheus    : http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT"
-          echo "AlertManager  : http://$(hostname -I | awk '{print $1}'):$ALERTMANAGER_PORT"
-          echo "-----------------"
-          echo "Identifiants Grafana : ${{ secrets.GRAFANA_ADMIN_USER }} / ${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          echo "================================================"
+          echo "🔔 NOTIFICATIONS ALERTMANAGER CONFIGURÉES 🔔"
+          echo "================================================"
+          echo ""
+          echo "📊 Accès aux interfaces :"
+          echo "- Prometheus    : http://$CLUSTER_IP:30090"
+          echo "- AlertManager  : http://$CLUSTER_IP:$ALERTMANAGER_PORT"
+          echo "- Grafana       : http://$CLUSTER_IP:$GRAFANA_PORT"
+          echo ""
+          echo "🔑 Identifiants Grafana :"
+          echo "- Utilisateur : ${{ secrets.GRAFANA_ADMIN_USER }}"
+          echo "- Mot de passe : ${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+          echo ""
+          echo "📧 Notifications envoyées à : ${{ secrets.SMTP_USER }}"
+          echo ""
+          echo "ℹ️ Pour vérifier les emails, consultez la boîte de réception de ${{ secrets.SMTP_USER }}"
+          echo "================================================"

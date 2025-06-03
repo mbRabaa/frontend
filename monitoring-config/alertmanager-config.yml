@@ -7,9 +7,22 @@ global:
   smtp_require_tls: true
 
 route:
-  receiver: 'default-email'
+  receiver: 'email-notifications'
+  group_by: ['alertname']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 3h
 
 receivers:
-- name: 'default-email'
+- name: 'email-notifications'
   email_configs:
   - to: '${{ secrets.SMTP_USER }}'
+    send_resolved: true
+    headers:
+      Subject: '[ALERTE] {{ .CommonLabels.alertname }}'
+    html: |
+      <h3>Alerte {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}</h3>
+      <p><strong>Service:</strong> {{ .CommonLabels.service }}</p>
+      <p><strong>Description:</strong> {{ .CommonAnnotations.summary }}</p>
+      <p><strong>Détails:</strong> {{ .CommonAnnotations.description }}</p>
+      <p><strong>Date:</strong> {{ (.StartsAt.Format "2006-01-02 15:04:05 UTC") }}</p>
