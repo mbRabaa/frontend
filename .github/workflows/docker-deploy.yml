@@ -475,7 +475,7 @@ jobs:
           kubectl create namespace monitoring || true
 
           # Vérifier que le fichier de configuration existe
-          if [ ! -f "monitoring-config/alertmanager-config.yml" ]; then
+          if [ ! -f "monitoring-config/monitoring-config/alertmanager-config.yml" ]; then
             echo "❌ Fichier alertmanager-config.yml manquant dans monitoring-config/"
             exit 1
           fi
