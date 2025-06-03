@@ -395,7 +395,7 @@ jobs:
           sed \
             -e "s|\${{ secrets.SMTP_USER }}|${{ secrets.SMTP_USER }}|g" \
             -e "s|\${{ secrets.SMTP_PASSWORD }}|${{ secrets.SMTP_PASSWORD }}|g" \
-            monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
+            monitoring-config/monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
 
           # Créer le secret de configuration
           kubectl -n monitoring create secret generic alertmanager-config \
