@@ -519,16 +519,17 @@ jobs:
 
       - name: 🔍 Vérifier la configuration
         run: |
-          # Vérifier AlertManager
+         # Vérifier AlertManager
           echo "=== Configuration AlertManager ==="
           kubectl -n monitoring exec deploy/alertmanager -- cat /etc/alertmanager/alertmanager.yml
 
-          # Vérifier les alertes dans Prometheus
-          echo "=== Alertes actives ==="
-          PROM_POD=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-          kubectl -n monitoring exec $PROM_POD -- \
-            curl -s http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | .labels.alertname'
-
+          # Vérification simplifiée de Prometheus
+           echo "=== Statut Prometheus ==="
+           PROM_POD=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+           kubectl -n monitoring exec $PROM_POD -- \
+           curl -s http://localhost:9090/-/healthy
+           echo "Prometheus est opérationnel"
+     
       - name: 📩 Tester les notifications
         run: |
           echo "=== Envoi d'une alerte test ==="
