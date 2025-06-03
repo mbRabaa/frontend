@@ -7,16 +7,9 @@ global:
   smtp_require_tls: true
 
 route:
-  receiver: 'email-team'
-  group_by: ['alertname']
-  group_wait: 30s
-  group_interval: 5m
-  repeat_interval: 1h
+  receiver: 'default-email'
 
 receivers:
-- name: 'email-team'
+- name: 'default-email'
   email_configs:
   - to: '${{ secrets.SMTP_USER }}'
-    send_resolved: true
-    headers:
-      Subject: '[ALERT] {{ .CommonLabels.alertname }}'
