@@ -471,12 +471,7 @@ jobs:
 
       - name: 🚨 Déployer les alertes du cluster
         run: |
-          # Vérifier que le fichier d'alertes existe
-          if [ ! -f "monitoring-config/cluster-alerts.yml" ]; then
-            echo "❌ Fichier cluster-alerts.yml manquant dans monitoring-config/"
-            exit 1
-          fi
-
+         
           # Appliquer les règles d'alerte
           kubectl apply -f monitoring-config/cluster-alerts.yml -n monitoring
 
