@@ -469,26 +469,6 @@ jobs:
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
 
-      - name: 🛠️ Configurer AlertManager
-        run: |
-          # Vérifier et créer le namespace si nécessaire
-          kubectl create namespace monitoring || true
-
-          # Vérifier que le fichier de configuration existe
-          if [ ! -f "monitoring-config/monitoring-config/alertmanager-config.yml" ]; then
-            echo "❌ Fichier alertmanager-config.yml manquant dans monitoring-config/"
-            exit 1
-          fi
-
-          # Appliquer la configuration AlertManager
-          kubectl -n monitoring create secret generic alertmanager-config \
-            --from-file=alertmanager.yml=monitoring-config/alertmanager-config.yml \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          # Redémarrer AlertManager pour appliquer les changements
-          kubectl -n monitoring rollout restart statefulset/alertmanager-monitoring-kube-prometheus-alertmanager
-          kubectl -n monitoring wait --for=condition=ready pod -l app.kubernetes.io/name=alertmanager --timeout=180s
-
       - name: 🚨 Déployer les alertes du cluster
         run: |
           # Vérifier que le fichier d'alertes existe
