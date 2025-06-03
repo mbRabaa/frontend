@@ -519,17 +519,32 @@ jobs:
 
       - name: 🔍 Vérifier la configuration
         run: |
-         # Vérifier AlertManager
+          # Vérifier AlertManager
           echo "=== Configuration AlertManager ==="
           kubectl -n monitoring exec deploy/alertmanager -- cat /etc/alertmanager/alertmanager.yml
 
-          # Vérification simplifiée de Prometheus
-           echo "=== Statut Prometheus ==="
-           PROM_POD=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-           kubectl -n monitoring exec $PROM_POD -- \
-           curl -s http://localhost:9090/-/healthy
-           echo "Prometheus est opérationnel"
-     
+          # Vérification de Prometheus via NodePort
+          echo "=== Statut Prometheus ==="
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"
+          
+          echo "Vérification de Prometheus via NodePort ($PROMETHEUS_URL)..."
+          if curl -s "$PROMETHEUS_URL" | grep -q "Prometheus is Healthy"; then
+            echo "Prometheus est opérationnel"
+            
+            # Récupérer les alertes actives via l'API externe
+            echo "=== Alertes actives ==="
+            ALERTS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/alerts"
+            curl -s "$ALERTS_URL" | jq '.data.alerts[]?.labels.alertname' || \
+              echo "Aucune alerte active ou erreur de récupération"
+          else
+            echo "::warning::Impossible de contacter Prometheus sur $PROMETHEUS_URL"
+          fi
+
+          # Vérification des règles configurées
+          echo "=== Règles d'alerte ==="
+          kubectl -n monitoring get prometheusrules
+
       - name: 📩 Tester les notifications
         run: |
           echo "=== Envoi d'une alerte test ==="
