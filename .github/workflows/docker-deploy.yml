@@ -560,20 +560,24 @@ jobs:
 
       - name: 🔍 Vérifier la configuration
         run: |
-         echo "=== Configuration Prometheus ==="
+         echo "=== Vérification globale ==="
          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-         curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/status/config" | \
-         grep -zoP '"yaml":\s*"\K[^"]*' | \
-         sed 's/\\n/\n/g' | \
-         grep -A10 "alertmanagers"
     
-         echo "=== Test de connexion à AlertManager ==="
-         if curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT/status" | grep -q "OK"; then
-         echo "✅ AlertManager est opérationnel"
-          else
-          echo "❌ AlertManager ne répond pas correctement"
-          exit 1
-          fi
+         # Vérification Prometheus
+           if curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/targets" | grep -q "prometheus"; then
+            echo "✅ Prometheus répond correctement"
+            else
+            echo "❌ Problème avec Prometheus"
+            exit 1
+             fi
+    
+          # Vérification AlertManager
+           if curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT" | grep -q "Alertmanager"; then
+           echo "✅ AlertManager répond correctement"
+           else
+           echo "❌ Problème avec AlertManager"
+           exit 1
+            fi
 
       - name: 🌐 Afficher les accès
         run: |
