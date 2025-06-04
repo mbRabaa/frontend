@@ -372,7 +372,7 @@ jobs:
   cluster-monitoring:
     needs: deploy-k3s
     runs-on: self-hosted
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: 🔧 Configurer kubectl
         run: |
@@ -467,8 +467,34 @@ jobs:
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:9093" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2"
+            --set prometheus.prometheusSpec.alertmanagersConfig="
+              alertmanagers:
+              - scheme: http
+                pathPrefix: /
+                static_configs:
+                - targets:
+                  - alertmanager.monitoring.svc:9093
+              "
+
+      - name: ⏳ Attendre que Prometheus soit prêt
+        run: |
+          for i in {1..30}; do
+            if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[*].status.phase}' | grep -q Running; then
+              echo "✅ Prometheus est en cours d'exécution"
+              # Vérifier la santé après 10 secondes supplémentaires
+              sleep 10
+              if kubectl -n monitoring exec $(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}') -- \
+                wget -qO- http://localhost:9090/-/healthy | grep -q "Prometheus is Healthy"; then
+                exit 0
+              fi
+            fi
+            sleep 5
+            echo "⌛ Tentative $i/30 - En attente du démarrage de Prometheus..."
+          done
+          echo "❌ Prometheus n'a pas démarré correctement"
+          exit 1
 
       - name: 🚨 Déployer les alertes du cluster
         run: |
@@ -520,59 +546,55 @@ jobs:
           echo "=== Détails des règles ==="
           kubectl describe prometheusrules -n monitoring
 
-      - name: 🔍 Vérifier la configuration
+      - name: 🔍 Vérifier la connexion Prometheus-AlertManager
         run: |
-          # Vérifier AlertManager
-          echo "=== Configuration AlertManager ==="
-          kubectl -n monitoring exec deploy/alertmanager -- cat /etc/alertmanager/alertmanager.yml
-
-          # Vérification de Prometheus via NodePort
-          echo "=== Statut Prometheus ==="
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"
+          echo "=== Vérification de la configuration Prometheus ==="
+          PROM_POD=$(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n monitoring exec $PROM_POD -- cat /etc/prometheus/config_out/prometheus.env.yaml | grep -A10 alertmanagers
           
-          echo "Vérification de Prometheus via NodePort ($PROMETHEUS_URL)..."
-          if curl -s "$PROMETHEUS_URL" | grep -q "Prometheus is Healthy"; then
-            echo "Prometheus est opérationnel"
-            
-            # Vérifier la configuration AlertManager dans Prometheus
-            echo "=== Configuration AlertManager dans Prometheus ==="
-            kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -- cat /etc/prometheus/config_out/prometheus.env.yaml | grep -A 5 alertmanagers
-            
-            # Récupérer les alertes actives via l'API externe
-            echo "=== Alertes actives ==="
-            ALERTS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/alerts"
-            curl -s "$ALERTS_URL" | jq '.data.alerts[]?.labels.alertname' || \
-              echo "Aucune alerte active ou erreur de récupération"
-          else
-            echo "::warning::Impossible de contacter Prometheus sur $PROMETHEUS_URL"
-          fi
+          echo "=== Test de connexion à AlertManager depuis Prometheus ==="
+          kubectl -n monitoring exec $PROM_POD -- \
+            sh -c 'curl -s http://alertmanager.monitoring.svc:9093/-/healthy'
+          
+          echo "=== Règles chargées ==="
+          kubectl -n monitoring exec $PROM_POD -- \
+            sh -c 'curl -s http://localhost:9090/api/v1/rules' | jq .
 
-          # Vérification des règles configurées
-          echo "=== Règles d'alerte ==="
-          kubectl -n monitoring get prometheusrules
-
-      - name: 📩 Tester les notifications
+      - name: 📩 Tester les notifications (méthode robuste)
         run: |
-          # Méthode 1 : Depuis l'extérieur du cluster (via NodePort)
-          echo "=== Test via NodePort ==="
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          if ! amtool \
-            --alertmanager.url="http://$CLUSTER_IP:$ALERTMANAGER_PORT" \
-            alert add test-alert \
-            --annotation=summary="Test d'intégration"; then
-            
-            echo "::warning::Échec via NodePort, tentative directe dans le pod"
-            
-            # Méthode 2 : Depuis l'intérieur du pod
-            kubectl -n monitoring exec deploy/alertmanager -- \
-              sh -c 'amtool --alertmanager.url=http://localhost:9093 alert add test-alert --annotation=summary="Test interne"'
+          echo "=== Test complet des notifications ==="
+          
+          # 1. Vérifier que AlertManager est joignable
+          ALERTMANAGER_POD=$(kubectl -n monitoring get pods -l app=alertmanager -o jsonpath='{.items[0].metadata.name}')
+          if ! kubectl -n monitoring exec $ALERTMANAGER_POD -- \
+            sh -c 'wget -qO- http://localhost:9093/-/healthy'; then
+            echo "::error::AlertManager n'est pas healthy"
+            exit 1
           fi
 
+          # 2. Envoyer une alerte test directement via l'API
+          echo "=== Envoi d'une alerte test via l'API ==="
+          kubectl -n monitoring exec $ALERTMANAGER_POD -- \
+            sh -c 'cat <<EOF | curl -s -X POST -H "Content-Type: application/json" -d @- http://localhost:9093/api/v2/alerts
+            [{
+              "status": "firing",
+              "labels": {
+                "alertname": "TestAlert",
+                "severity": "critical"
+              },
+              "annotations": {
+                "summary": "Alerte de test",
+                "description": "Ceci est une alerte de test"
+              },
+              "generatorURL": "http://prometheus.monitoring.svc:9090"
+            }]
+            EOF'
+
+          # 3. Vérifier que l'alerte est bien reçue
           sleep 5
           echo "=== Alertes actives ==="
-          kubectl -n monitoring exec deploy/alertmanager -- \
-            sh -c 'amtool --alertmanager.url=http://localhost:9093 alert query'
+          kubectl -n monitoring exec $ALERTMANAGER_POD -- \
+            sh -c 'curl -s http://localhost:9093/api/v2/alerts' | jq .
 
       - name: 🔍 Vérifier les déploiements
         run: |
