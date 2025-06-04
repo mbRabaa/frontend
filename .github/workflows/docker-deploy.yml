@@ -1,4 +1,4 @@
-name: chaine CI/CD Complète
+name: Chaine CI/CD Complète
 
 on:
   push:
@@ -386,21 +386,17 @@ jobs:
 
       - name: 🛠️ Déployer AlertManager (sans Helm)
         run: |
-          # Créer le namespace si inexistant
           kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
-          # Créer la configuration AlertManager avec interpolation des secrets
           sed \
             -e "s|\${{ secrets.SMTP_USER }}|${{ secrets.SMTP_USER }}|g" \
             -e "s|\${{ secrets.SMTP_PASSWORD }}|${{ secrets.SMTP_PASSWORD }}|g" \
             monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
 
-          # Créer le secret de configuration
           kubectl -n monitoring create secret generic alertmanager-config \
             --from-file=alertmanager.yml=alertmanager-resolved.yml \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          # Déployer AlertManager
           kubectl apply -f - <<EOF
           apiVersion: apps/v1
           kind: Deployment
@@ -435,7 +431,6 @@ jobs:
                     secretName: alertmanager-config
           EOF
 
-          # Créer le Service NodePort
           kubectl apply -f - <<EOF
           apiVersion: v1
           kind: Service
@@ -447,7 +442,7 @@ jobs:
             ports:
             - port: 9093
               targetPort: http
-              nodePort: $ALERTMANAGER_PORT  # 30092
+              nodePort: $ALERTMANAGER_PORT
             selector:
               app: alertmanager
           EOF
@@ -455,26 +450,29 @@ jobs:
       - name: ⎈ Installer Prometheus+Grafana avec Helm
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
           helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
+            --version 45.7.1 \
             --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
             --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             --set prometheus.service.type=NodePort \
-            --set prometheus.service.nodePort=$PROMETHEUS_PORT \  # 30090
+            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
             --set grafana.service.type=NodePort \
-            --set grafana.service.nodePort=$GRAFANA_PORT \  # 30091
+            --set grafana.service.nodePort=$GRAFANA_PORT \
             --set alertmanager.enabled=false \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:$ALERTMANAGER_PORT" \  # 30092
-            --set prometheus.prometheusSpec.externalUrl="http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT" \  # 30090
-            --set prometheus.prometheusSpec.listenLocal=true
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:$ALERTMANAGER_PORT" \
+            --set prometheus.prometheusSpec.externalUrl="http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT" \
+            --set prometheus.prometheusSpec.listenLocal=true \
+            --wait --timeout 10m
 
       - name: ⏳ Attendre que Prometheus soit prêt
         run: |
           CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"  # 30090
+          PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"
           
           for i in {1..30}; do
             if curl -s "$PROMETHEUS_URL" | grep -q "Prometheus is Healthy"; then
@@ -487,9 +485,8 @@ jobs:
           echo "❌ Prometheus n'est pas accessible via $PROMETHEUS_URL après 5 minutes"
           exit 1
 
-      - name: 🚨 Déployer les alertes du cluster
+      - name: 🚨 Déployer les règles d'alerte
         run: |
-          # Appliquer les règles d'alerte intégrées
           kubectl apply -n monitoring -f - <<EOF
           apiVersion: monitoring.coreos.com/v1
           kind: PrometheusRule
@@ -505,55 +502,42 @@ jobs:
                 for: 1m
                 labels:
                   severity: critical
-                  service: infrastructure
                 annotations:
                   summary: "Node {{ \$labels.instance }} is down"
                   description: "Le noeud {{ \$labels.instance }} ne répond pas depuis 1 minute"
-
               - alert: HighMemoryUsage
                 expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
                 for: 5m
                 labels:
                   severity: warning
-                  service: infrastructure
                 annotations:
                   summary: "High memory usage on {{ \$labels.instance }}"
                   description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
-
               - alert: HighCPUUsage
                 expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
                 for: 5m
                 labels:
                   severity: warning
-                  service: infrastructure
                 annotations:
                   summary: "High CPU usage on {{ \$labels.instance }}"
                   description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
           EOF
 
-          # Vérifier le déploiement
-          echo "=== Règles déployées ==="
-          kubectl get prometheusrules -n monitoring -o wide
-          echo "=== Détails des règles ==="
-          kubectl describe prometheusrules -n monitoring
-
       - name: 🔍 Vérifier la configuration
         run: |
-          # Vérifier la connexion Prometheus-AlertManager
           PROM_POD=$(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-          echo "=== Configuration AlertManager dans Prometheus ==="
+          echo "=== Configuration Prometheus ==="
           kubectl -n monitoring exec $PROM_POD -- cat /etc/prometheus/config_out/prometheus.env.yaml | grep -A10 alertmanagers
           
           echo "=== Test de connexion à AlertManager ==="
-          kubectl -n monitoring exec $PROM_POD -- \
-            sh -c 'curl -s http://alertmanager.monitoring.svc:$ALERTMANAGER_PORT/-/healthy'
+          kubectl -n monitoring exec $PROM_POD -- sh -c "curl -s http://alertmanager.monitoring.svc:$ALERTMANAGER_PORT/-/healthy"
 
       - name: 📩 Tester les notifications
         run: |
           CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          ALERTMANAGER_URL="http://$CLUSTER_IP:$ALERTMANAGER_PORT"  # 30092
+          ALERTMANAGER_URL="http://$CLUSTER_IP:$ALERTMANAGER_PORT"
           
-          echo "=== Envoi d'une alerte test ==="
+          echo "=== Envoi d'alerte test ==="
           curl -X POST "$ALERTMANAGER_URL/api/v2/alerts" -H "Content-Type: application/json" -d '[
             {
               "labels": {
@@ -574,7 +558,7 @@ jobs:
       - name: 🔍 Vérifier les déploiements
         run: |
           echo "=== État du cluster ==="
-          kubectl get pods,svc -n monitoring
+          kubectl get pods,svc -n monitoring -o wide
           echo "=== Logs AlertManager ==="
           kubectl logs -n monitoring -l app=alertmanager --tail=50
           echo "=== Logs Prometheus ==="
@@ -589,9 +573,9 @@ jobs:
           ================================================
           
           📊 Accès aux interfaces :
-          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT (30090)
-          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT (30092)
-          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT (30091)
+          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
+          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
+          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
           
           🔑 Identifiants Grafana:
           - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}
