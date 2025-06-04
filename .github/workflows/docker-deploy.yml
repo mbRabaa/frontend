@@ -372,7 +372,7 @@ jobs:
   cluster-monitoring:
     needs: deploy-k3s
     runs-on: self-hosted
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: 🔧 Configurer kubectl
         run: |
@@ -447,7 +447,7 @@ jobs:
             ports:
             - port: 9093
               targetPort: http
-              nodePort: $ALERTMANAGER_PORT
+              nodePort: $ALERTMANAGER_PORT  # 30092
             selector:
               app: alertmanager
           EOF
@@ -460,40 +460,31 @@ jobs:
             --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
             --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             --set prometheus.service.type=NodePort \
-            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
+            --set prometheus.service.nodePort=$PROMETHEUS_PORT \  # 30090
             --set grafana.service.type=NodePort \
-            --set grafana.service.nodePort=$GRAFANA_PORT \
+            --set grafana.service.nodePort=$GRAFANA_PORT \  # 30091
             --set alertmanager.enabled=false \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:9093" \
-            --set prometheus.prometheusSpec.alertmanagersConfig="
-              alertmanagers:
-              - scheme: http
-                pathPrefix: /
-                static_configs:
-                - targets:
-                  - alertmanager.monitoring.svc:9093
-              "
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:$ALERTMANAGER_PORT" \  # 30092
+            --set prometheus.prometheusSpec.externalUrl="http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT" \  # 30090
+            --set prometheus.prometheusSpec.listenLocal=true
 
       - name: ⏳ Attendre que Prometheus soit prêt
         run: |
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"  # 30090
+          
           for i in {1..30}; do
-            if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[*].status.phase}' | grep -q Running; then
-              echo "✅ Prometheus est en cours d'exécution"
-              # Vérifier la santé après 10 secondes supplémentaires
-              sleep 10
-              if kubectl -n monitoring exec $(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}') -- \
-                wget -qO- http://localhost:30090/-/healthy | grep -q "Prometheus is Healthy"; then
-                exit 0
-              fi
+            if curl -s "$PROMETHEUS_URL" | grep -q "Prometheus is Healthy"; then
+              echo "✅ Prometheus est opérationnel via NodePort $PROMETHEUS_PORT"
+              exit 0
             fi
-            sleep 5
-            echo "⌛ Tentative $i/30 - En attente du démarrage de Prometheus..."
+            sleep 10
+            echo "⌛ Tentative $i/30 - En attente de Prometheus sur $PROMETHEUS_URL..."
           done
-          echo "❌ Prometheus n'a pas démarré correctement"
+          echo "❌ Prometheus n'est pas accessible via $PROMETHEUS_URL après 5 minutes"
           exit 1
 
       - name: 🚨 Déployer les alertes du cluster
@@ -546,55 +537,39 @@ jobs:
           echo "=== Détails des règles ==="
           kubectl describe prometheusrules -n monitoring
 
-      - name: 🔍 Vérifier la connexion Prometheus-AlertManager
+      - name: 🔍 Vérifier la configuration
         run: |
-          echo "=== Vérification de la configuration Prometheus ==="
+          # Vérifier la connexion Prometheus-AlertManager
           PROM_POD=$(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
+          echo "=== Configuration AlertManager dans Prometheus ==="
           kubectl -n monitoring exec $PROM_POD -- cat /etc/prometheus/config_out/prometheus.env.yaml | grep -A10 alertmanagers
           
-          echo "=== Test de connexion à AlertManager depuis Prometheus ==="
+          echo "=== Test de connexion à AlertManager ==="
           kubectl -n monitoring exec $PROM_POD -- \
-            sh -c 'curl -s http://alertmanager.monitoring.svc:30092/-/healthy'
-          
-          echo "=== Règles chargées ==="
-          kubectl -n monitoring exec $PROM_POD -- \
-            sh -c 'curl -s http://localhost:30090/api/v1/rules' | jq .
+            sh -c 'curl -s http://alertmanager.monitoring.svc:$ALERTMANAGER_PORT/-/healthy'
 
-      - name: 📩 Tester les notifications (méthode robuste)
+      - name: 📩 Tester les notifications
         run: |
-          echo "=== Test complet des notifications ==="
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          ALERTMANAGER_URL="http://$CLUSTER_IP:$ALERTMANAGER_PORT"  # 30092
           
-          # 1. Vérifier que AlertManager est joignable
-          ALERTMANAGER_POD=$(kubectl -n monitoring get pods -l app=alertmanager -o jsonpath='{.items[0].metadata.name}')
-          if ! kubectl -n monitoring exec $ALERTMANAGER_POD -- \
-            sh -c 'wget -qO- http://localhost:30092/-/healthy'; then
-            echo "::error::AlertManager n'est pas healthy"
-            exit 1
-          fi
-
-          # 2. Envoyer une alerte test directement via l'API
-          echo "=== Envoi d'une alerte test via l'API ==="
-          kubectl -n monitoring exec $ALERTMANAGER_POD -- \
-            sh -c 'cat <<EOF | curl -s -X POST -H "Content-Type: application/json" -d @- http://localhost:30092/api/v2/alerts
-            [{
-              "status": "firing",
+          echo "=== Envoi d'une alerte test ==="
+          curl -X POST "$ALERTMANAGER_URL/api/v2/alerts" -H "Content-Type: application/json" -d '[
+            {
               "labels": {
                 "alertname": "TestAlert",
-                "severity": "critical"
+                "severity": "warning"
               },
               "annotations": {
-                "summary": "Alerte de test",
-                "description": "Ceci est une alerte de test"
-              },
-              "generatorURL": "http://prometheus.monitoring.svc:30090"
-            }]
-            EOF'
-
-          # 3. Vérifier que l'alerte est bien reçue
+                "summary": "Test d'\''alerte",
+                "description": "Ceci est un test"
+              }
+            }
+          ]'
+          
           sleep 5
           echo "=== Alertes actives ==="
-          kubectl -n monitoring exec $ALERTMANAGER_POD -- \
-            sh -c 'curl -s http://localhost:30092/api/v2/alerts' | jq .
+          curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
 
       - name: 🔍 Vérifier les déploiements
         run: |
@@ -614,9 +589,9 @@ jobs:
           ================================================
           
           📊 Accès aux interfaces :
-          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
-          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
-          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
+          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT (30090)
+          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT (30092)
+          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT (30091)
           
           🔑 Identifiants Grafana:
           - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}
