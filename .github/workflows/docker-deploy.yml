@@ -553,14 +553,19 @@ jobs:
           echo "=== Alertes actives ==="
           curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
 
-      - name: 🔍 Vérifier les déploiements
+      - name: 🔍 Vérifier la configuration
         run: |
-          echo "=== État du cluster ==="
-          kubectl get pods,svc -n monitoring -o wide
-          echo "=== Logs AlertManager ==="
-          kubectl logs -n monitoring -l app=alertmanager --tail=50
-          echo "=== Logs Prometheus ==="
-          kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus --tail=50
+         echo "=== Configuration Prometheus ==="
+         # Solution plus fiable sans jq
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/status/config" | \
+           python3 -c "import sys, json; print(json.load(sys.stdin)['data']['yaml']" | \
+           grep -A10 "alertmanagers"
+    
+          echo "=== Test de connexion à AlertManager ==="
+          # Utilisation du NodePort externe plutôt que localhost
+         curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT/status"
+         echo "
 
       - name: 🌐 Afficher les accès
         run: |
