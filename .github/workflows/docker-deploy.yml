@@ -523,12 +523,17 @@ jobs:
 
       - name: 🔍 Vérifier la configuration
         run: |
-          PROM_POD=$(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}')
-          echo "=== Configuration Prometheus ==="
-          kubectl -n monitoring exec $PROM_POD -- cat /etc/prometheus/config_out/prometheus.env.yaml | grep -A10 alertmanagers
-          
+         echo "=== Configuration Prometheus ==="
+           # Solution plus fiable sans jq
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/status/config" | \
+           python3 -c "import sys, json; print(json.load(sys.stdin)['data']['yaml']" | \
+           grep -A10 "alertmanagers"
+    
           echo "=== Test de connexion à AlertManager ==="
-          kubectl -n monitoring exec $PROM_POD -- sh -c "curl -s http://alertmanager.monitoring.svc:$ALERTMANAGER_PORT/-/healthy"
+          # Utilisation du NodePort externe plutôt que localhost
+          curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT"
+          echo "" # Pour avoir un retour à la ligne propre
 
       - name: 📩 Tester les notifications
         run: |
