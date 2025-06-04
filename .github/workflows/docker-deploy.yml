@@ -561,16 +561,19 @@ jobs:
       - name: 🔍 Vérifier la configuration
         run: |
          echo "=== Configuration Prometheus ==="
-         # Solution plus fiable sans jq
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/status/config" | \
-           python3 -c "import sys, json; print(json.load(sys.stdin)['data']['yaml']" | \
-           grep -A10 "alertmanagers"
+         CLUSTER_IP=$(hostname -I | awk '{print $1}')
+         curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/status/config" | \
+         grep -zoP '"yaml":\s*"\K[^"]*' | \
+         sed 's/\\n/\n/g' | \
+         grep -A10 "alertmanagers"
     
-          echo "=== Test de connexion à AlertManager ==="
-          # Utilisation du NodePort externe plutôt que localhost
-         curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT/status"
-         echo "
+         echo "=== Test de connexion à AlertManager ==="
+         if curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT/status" | grep -q "OK"; then
+         echo "✅ AlertManager est opérationnel"
+          else
+          echo "❌ AlertManager ne répond pas correctement"
+          exit 1
+          fi
 
       - name: 🌐 Afficher les accès
         run: |
