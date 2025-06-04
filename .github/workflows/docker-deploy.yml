@@ -467,19 +467,21 @@ jobs:
 
       - name: ⏳ Attendre que Prometheus soit prêt
         run: |
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"
-          
-          for i in {1..30}; do
-            if curl -s "$PROMETHEUS_URL" | grep -q "Prometheus is Healthy"; then
-              echo "✅ Prometheus est opérationnel via NodePort $PROMETHEUS_PORT"
-              exit 0
-            fi
-            sleep 10
-            echo "⌛ Tentative $i/30 - En attente de Prometheus sur $PROMETHEUS_URL..."
-          done
-          echo "❌ Prometheus n'est pas accessible via $PROMETHEUS_URL après 5 minutes"
-          exit 1
+         CLUSTER_IP=$(hostname -I | awk '{print $1}')
+         PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/status"
+    
+         for i in {1..30}; do
+         if curl -s "$PROMETHEUS_URL" | grep -q "ready"; then
+         echo "✅ Prometheus est opérationnel via NodePort $PROMETHEUS_PORT"
+         exit 0
+         fi
+         sleep 10
+         echo "⌛ Tentative $i/30 - En attente de Prometheus sur $PROMETHEUS_URL..."
+         done
+         echo "❌ Prometheus n'est pas accessible via $PROMETHEUS_URL après 5 minutes"
+         kubectl -n monitoring get pods
+         kubectl -n monitoring logs prometheus-monitoring-kube-prometheus-prometheus-0 -c prometheus
+         exit 1
 
       - name: 🚨 Déployer les règles d'alerte
         run: |
