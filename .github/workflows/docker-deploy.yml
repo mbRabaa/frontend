@@ -547,17 +547,25 @@ jobs:
 
       - name: 📩 Tester les notifications
         run: |
-          echo "=== Envoi d'une alerte test ==="
-          kubectl -n monitoring exec deploy/alertmanager -- \
-            amtool alert add \
-            alertname="IntegrationTestAlert" \
-            severity="critical" \
-            --annotation=summary="Test d'intégration" \
-            --annotation=description="Ceci est un test de notification par email"
+          # Méthode 1 : Depuis l'extérieur du cluster (via NodePort)
+          echo "=== Test via NodePort ==="
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          if ! amtool \
+            --alertmanager.url="http://$CLUSTER_IP:$ALERTMANAGER_PORT" \
+            alert add test-alert \
+            --annotation=summary="Test d'intégration"; then
+            
+            echo "::warning::Échec via NodePort, tentative directe dans le pod"
+            
+            # Méthode 2 : Depuis l'intérieur du pod
+            kubectl -n monitoring exec deploy/alertmanager -- \
+              sh -c 'amtool --alertmanager.url=http://localhost:9093 alert add test-alert --annotation=summary="Test interne"'
+          fi
 
-          sleep 10
-          echo "=== Dernières alertes ==="
-          kubectl -n monitoring exec deploy/alertmanager -- amtool alert query
+          sleep 5
+          echo "=== Alertes actives ==="
+          kubectl -n monitoring exec deploy/alertmanager -- \
+            sh -c 'amtool --alertmanager.url=http://localhost:9093 alert query'
 
       - name: 🔍 Vérifier les déploiements
         run: |
