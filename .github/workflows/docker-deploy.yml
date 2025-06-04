@@ -465,7 +465,10 @@ jobs:
             --set grafana.service.nodePort=$GRAFANA_PORT \
             --set alertmanager.enabled=false \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
-            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
+            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:9093" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2"
 
       - name: 🚨 Déployer les alertes du cluster
         run: |
@@ -532,6 +535,10 @@ jobs:
           if curl -s "$PROMETHEUS_URL" | grep -q "Prometheus is Healthy"; then
             echo "Prometheus est opérationnel"
             
+            # Vérifier la configuration AlertManager dans Prometheus
+            echo "=== Configuration AlertManager dans Prometheus ==="
+            kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -- cat /etc/prometheus/config_out/prometheus.env.yaml | grep -A 5 alertmanagers
+            
             # Récupérer les alertes actives via l'API externe
             echo "=== Alertes actives ==="
             ALERTS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/alerts"
@@ -573,6 +580,8 @@ jobs:
           kubectl get pods,svc -n monitoring
           echo "=== Logs AlertManager ==="
           kubectl logs -n monitoring -l app=alertmanager --tail=50
+          echo "=== Logs Prometheus ==="
+          kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus --tail=50
 
       - name: 🌐 Afficher les accès
         run: |
