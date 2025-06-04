@@ -486,7 +486,7 @@ jobs:
               # Vérifier la santé après 10 secondes supplémentaires
               sleep 10
               if kubectl -n monitoring exec $(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}') -- \
-                wget -qO- http://localhost:9090/-/healthy | grep -q "Prometheus is Healthy"; then
+                wget -qO- http://localhost:30090/-/healthy | grep -q "Prometheus is Healthy"; then
                 exit 0
               fi
             fi
@@ -554,11 +554,11 @@ jobs:
           
           echo "=== Test de connexion à AlertManager depuis Prometheus ==="
           kubectl -n monitoring exec $PROM_POD -- \
-            sh -c 'curl -s http://alertmanager.monitoring.svc:9093/-/healthy'
+            sh -c 'curl -s http://alertmanager.monitoring.svc:30092/-/healthy'
           
           echo "=== Règles chargées ==="
           kubectl -n monitoring exec $PROM_POD -- \
-            sh -c 'curl -s http://localhost:9090/api/v1/rules' | jq .
+            sh -c 'curl -s http://localhost:30090/api/v1/rules' | jq .
 
       - name: 📩 Tester les notifications (méthode robuste)
         run: |
@@ -567,7 +567,7 @@ jobs:
           # 1. Vérifier que AlertManager est joignable
           ALERTMANAGER_POD=$(kubectl -n monitoring get pods -l app=alertmanager -o jsonpath='{.items[0].metadata.name}')
           if ! kubectl -n monitoring exec $ALERTMANAGER_POD -- \
-            sh -c 'wget -qO- http://localhost:9093/-/healthy'; then
+            sh -c 'wget -qO- http://localhost:30092/-/healthy'; then
             echo "::error::AlertManager n'est pas healthy"
             exit 1
           fi
@@ -575,7 +575,7 @@ jobs:
           # 2. Envoyer une alerte test directement via l'API
           echo "=== Envoi d'une alerte test via l'API ==="
           kubectl -n monitoring exec $ALERTMANAGER_POD -- \
-            sh -c 'cat <<EOF | curl -s -X POST -H "Content-Type: application/json" -d @- http://localhost:9093/api/v2/alerts
+            sh -c 'cat <<EOF | curl -s -X POST -H "Content-Type: application/json" -d @- http://localhost:30092/api/v2/alerts
             [{
               "status": "firing",
               "labels": {
@@ -586,7 +586,7 @@ jobs:
                 "summary": "Alerte de test",
                 "description": "Ceci est une alerte de test"
               },
-              "generatorURL": "http://prometheus.monitoring.svc:9090"
+              "generatorURL": "http://prometheus.monitoring.svc:30090"
             }]
             EOF'
 
@@ -594,7 +594,7 @@ jobs:
           sleep 5
           echo "=== Alertes actives ==="
           kubectl -n monitoring exec $ALERTMANAGER_POD -- \
-            sh -c 'curl -s http://localhost:9093/api/v2/alerts' | jq .
+            sh -c 'curl -s http://localhost:30092/api/v2/alerts' | jq .
 
       - name: 🔍 Vérifier les déploiements
         run: |
