@@ -1,4 +1,4 @@
-name: chaine CI/CD 
+name: Chaine CI/CD
 
 on:
   push:
@@ -34,7 +34,7 @@ env:
   PROMETHEUS_PORT: 30090
   ALERTMANAGER_PORT: 30092
 
-  # alertmanager
+  # Alertmanager
   SMTP_USER: ${{ secrets.SMTP_USER }}
   SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
 
@@ -373,6 +373,7 @@ jobs:
     needs: deploy-k3s
     runs-on: self-hosted
     timeout-minutes: 30
+
     steps:
       - name: 🔧 Configurer kubectl
         run: |
@@ -467,21 +468,18 @@ jobs:
 
       - name: ⏳ Attendre que Prometheus soit prêt
         run: |
-         CLUSTER_IP=$(hostname -I | awk '{print $1}')
-         PROMETHEUS_URL="http://$CLUSTER_IP:$PROMETHEUS_PORT/status"
-    
-         for i in {1..30}; do
-         if curl -s "$PROMETHEUS_URL" | grep -q "ready"; then
-         echo "✅ Prometheus est opérationnel via NodePort $PROMETHEUS_PORT"
-         exit 0
-         fi
-         sleep 10
-         echo "⌛ Tentative $i/30 - En attente de Prometheus sur $PROMETHEUS_URL..."
-         done
-         echo "❌ Prometheus n'est pas accessible via $PROMETHEUS_URL après 5 minutes"
-         kubectl -n monitoring get pods
-         kubectl -n monitoring logs prometheus-monitoring-kube-prometheus-prometheus-0 -c prometheus
-         exit 1
+          for i in {1..30}; do
+            if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; then
+              echo "✅ Prometheus est en cours d'exécution"
+              exit 0
+            fi
+            sleep 10
+            echo "⌛ Tentative $i/30 - En attente du démarrage de Prometheus..."
+          done
+          echo "❌ Prometheus n'a pas démarré après 5 minutes"
+          kubectl -n monitoring describe pods -l app.kubernetes.io/name=prometheus
+          kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus --tail=50
+          exit 1
 
       - name: 🚨 Déployer les règles d'alerte
         run: |
@@ -523,17 +521,29 @@ jobs:
 
       - name: 🔍 Vérifier la configuration
         run: |
-         echo "=== Configuration Prometheus ==="
-           # Solution plus fiable sans jq
+          echo "=== Début des vérifications ==="
           CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/status/config" | \
-           python3 -c "import sys, json; print(json.load(sys.stdin)['data']['yaml']" | \
-           grep -A10 "alertmanagers"
-    
-          echo "=== Test de connexion à AlertManager ==="
-          # Utilisation du NodePort externe plutôt que localhost
-          curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT"
-          echo "" # Pour avoir un retour à la ligne propre
+          echo "IP du cluster: $CLUSTER_IP"
+
+          # Vérification Prometheus
+          echo "=== Test Prometheus sur le port $PROMETHEUS_PORT ==="
+          if curl -s -o /dev/null -w "%{http_code}" "http://$CLUSTER_IP:$PROMETHEUS_PORT/targets" | grep -q "200"; then
+            echo "✅ Prometheus répond correctement (HTTP 200)"
+          else
+            echo "❌ Échec de la connexion à Prometheus"
+            curl -v "http://$CLUSTER_IP:$PROMETHEUS_PORT/targets"
+            exit 1
+          fi
+
+          # Vérification AlertManager
+          echo "=== Test AlertManager sur le port $ALERTMANAGER_PORT ==="
+          if curl -s -o /dev/null -w "%{http_code}" "http://$CLUSTER_IP:$ALERTMANAGER_PORT" | grep -q "200"; then
+            echo "✅ AlertManager répond correctement (HTTP 200)"
+          else
+            echo "❌ Échec de la connexion à AlertManager"
+            curl -v "http://$CLUSTER_IP:$ALERTMANAGER_PORT"
+            exit 1
+          fi
 
       - name: 📩 Tester les notifications
         run: |
@@ -557,27 +567,6 @@ jobs:
           sleep 5
           echo "=== Alertes actives ==="
           curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
-
-      - name: 🔍 Vérifier la configuration
-        run: |
-         echo "=== Vérification globale ==="
-         CLUSTER_IP=$(hostname -I | awk '{print $1}')
-    
-         # Vérification Prometheus
-           if curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/targets" | grep -q "prometheus"; then
-            echo "✅ Prometheus répond correctement"
-            else
-            echo "❌ Problème avec Prometheus"
-            exit 1
-             fi
-    
-          # Vérification AlertManager
-           if curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT" | grep -q "Alertmanager"; then
-           echo "✅ AlertManager répond correctement"
-           else
-           echo "❌ Problème avec AlertManager"
-           exit 1
-            fi
 
       - name: 🌐 Afficher les accès
         run: |
