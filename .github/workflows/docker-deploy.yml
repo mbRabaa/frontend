@@ -450,10 +450,8 @@ jobs:
       - name: ⎈ Installer Prometheus+Grafana avec Helm
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo update
           helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
-            --version 45.7.1 \
             --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
             --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             --set prometheus.service.type=NodePort \
@@ -464,10 +462,8 @@ jobs:
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:$ALERTMANAGER_PORT" \
-            --set prometheus.prometheusSpec.externalUrl="http://$(hostname -I | awk '{print $1}'):$PROMETHEUS_PORT" \
-            --set prometheus.prometheusSpec.listenLocal=true \
-            --wait --timeout 10m
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:9093" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2"
 
       - name: ⏳ Attendre que Prometheus soit prêt
         run: |
