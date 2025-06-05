@@ -373,6 +373,10 @@ jobs:
     needs: deploy-k3s
     runs-on: self-hosted
     timeout-minutes: 30
+    env:
+      GRAFANA_PORT: 30091
+      PROMETHEUS_PORT: 30090
+      ALERTMANAGER_PORT: 30092
 
     steps:
       - name: 🔧 Configurer kubectl
