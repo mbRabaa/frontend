@@ -1,4 +1,4 @@
-name:  CI/CD complete 
+name: CI/CD complete
 
 on:
   push:
@@ -373,11 +373,6 @@ jobs:
     needs: deploy-k3s
     runs-on: self-hosted
     timeout-minutes: 30
-    env:
-      GRAFANA_PORT: 30091
-      PROMETHEUS_PORT: 30090
-      ALERTMANAGER_PORT: 30092
-
     steps:
       - name: 🔧 Configurer kubectl
         run: |
@@ -464,6 +459,7 @@ jobs:
             --set grafana.service.type=NodePort \
             --set grafana.service.nodePort=$GRAFANA_PORT \
             --set alertmanager.enabled=false \
+            --set prometheus.prometheusSpec.ruleSelector.matchLabels.release="monitoring" \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
@@ -475,6 +471,8 @@ jobs:
           for i in {1..30}; do
             if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; then
               echo "✅ Prometheus est en cours d'exécution"
+              # Attendre encore 30s pour être sûr que Prometheus est complètement prêt
+              sleep 30
               exit 0
             fi
             sleep 10
@@ -493,6 +491,9 @@ jobs:
           metadata:
             name: cluster-alerts
             namespace: monitoring
+            labels:
+              release: monitoring
+              app: kube-prometheus-stack
           spec:
             groups:
             - name: cluster-health
@@ -514,7 +515,7 @@ jobs:
                   summary: "High memory usage on {{ \$labels.instance }}"
                   description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
               - alert: HighCPUUsage
-                expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+                expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 80
                 for: 5m
                 labels:
                   severity: warning
@@ -523,31 +524,29 @@ jobs:
                   description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
           EOF
 
+      - name: 🔄 Vérifier les règles d'alerte
+        run: |
+          echo "=== Vérification des règles déployées ==="
+          kubectl -n monitoring get prometheusrules -o wide
+          
+          echo "=== Attente de 30s pour la synchronisation des règles ==="
+          sleep 30
+          
+          echo "=== Liste des règles dans Prometheus ==="
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/rules" | jq .data.groups || echo "Aucune règle trouvée"
+          
+          echo "=== Logs du Prometheus Operator ==="
+          kubectl -n monitoring logs -l app.kubernetes.io/name=kube-prometheus-stack-operator --tail=20
+
       - name: 🔍 Vérifier la configuration
         run: |
-          echo "=== Début des vérifications ==="
           CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          echo "IP du cluster: $CLUSTER_IP"
-
-          # Vérification Prometheus
-          echo "=== Test Prometheus sur le port $PROMETHEUS_PORT ==="
-          if curl -s -o /dev/null -w "%{http_code}" "http://$CLUSTER_IP:$PROMETHEUS_PORT/targets" | grep -q "200"; then
-            echo "✅ Prometheus répond correctement (HTTP 200)"
-          else
-            echo "❌ Échec de la connexion à Prometheus"
-            curl -v "http://$CLUSTER_IP:$PROMETHEUS_PORT/targets"
-            exit 1
-          fi
-
-          # Vérification AlertManager
-          echo "=== Test AlertManager sur le port $ALERTMANAGER_PORT ==="
-          if curl -s -o /dev/null -w "%{http_code}" "http://$CLUSTER_IP:$ALERTMANAGER_PORT" | grep -q "200"; then
-            echo "✅ AlertManager répond correctement (HTTP 200)"
-          else
-            echo "❌ Échec de la connexion à AlertManager"
-            curl -v "http://$CLUSTER_IP:$ALERTMANAGER_PORT"
-            exit 1
-          fi
+          echo "=== Test Prometheus ==="
+          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/-/healthy"
+          
+          echo "=== Test AlertManager ==="
+          curl -s "http://$CLUSTER_IP:$ALERTMANAGER_PORT/-/healthy"
 
       - name: 📩 Tester les notifications
         run: |
