@@ -462,10 +462,12 @@ jobs:
             --set grafana.service.type=NodePort \
             --set grafana.service.nodePort=$GRAFANA_PORT \
             --set alertmanager.enabled=false \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].static_configs[0].targets[0]="alertmanager.monitoring.svc:9093" \
+            --set prometheus.prometheusSpec.alertmanagerConfigNamespaceSelector.matchLabels.name="monitoring" \
+            --set prometheus.prometheusSpec.alertmanagerConfigSelector.matchLabels.release="monitoring" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].staticConfigs[0].targets[0]="alertmanager.monitoring.svc:9093" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
             --set prometheus.prometheusSpec.alerting.alertmanagers[0].timeout="10s" \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleSelector.matchLabels.release="monitoring" \
@@ -486,6 +488,33 @@ jobs:
           kubectl -n monitoring describe pods -l app.kubernetes.io/name=prometheus
           kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus --tail=50
           exit 1
+
+      - name: 🛠️ Configurer Alertmanager pour Prometheus
+        run: |
+          kubectl apply -n monitoring -f - <<EOF
+          apiVersion: monitoring.coreos.com/v1alpha1
+          kind: AlertmanagerConfig
+          metadata:
+            name: monitoring-alertmanager-config
+            labels:
+              release: monitoring
+          spec:
+            route:
+              receiver: 'email-notifications'
+              groupBy: ['alertname']
+              groupWait: 30s
+              groupInterval: 5m
+              repeatInterval: 12h
+            receivers:
+            - name: 'email-notifications'
+              emailConfigs:
+              - to: '${{ secrets.SMTP_USER }}'
+                from: '${{ secrets.SMTP_USER }}'
+                smarthost: 'smtp.gmail.com:587'
+                authUsername: '${{ secrets.SMTP_USER }}'
+                authPassword: '${{ secrets.SMTP_PASSWORD }}'
+                requireTLS: true
+          EOF
 
       - name: 🔍 Vérifier la connexion Prometheus-AlertManager
         run: |
@@ -558,6 +587,24 @@ jobs:
           
           echo "=== Logs du Prometheus Operator ==="
           kubectl -n monitoring logs -l app.kubernetes.io/name=kube-prometheus-stack-operator --tail=20
+
+      - name: 🔍 Vérifier la configuration finale
+        run: |
+          echo "=== Configuration Prometheus ==="
+          kubectl -n monitoring get prometheus -o yaml
+          
+          echo "=== Configuration Alertmanager ==="
+          kubectl -n monitoring get secret alertmanager-config -o jsonpath='{.data.alertmanager\.yml}' | base64 -d
+          
+          echo "=== Endpoints Alertmanager ==="
+          kubectl -n monitoring get endpoints alertmanager
+          
+          echo "=== Statut des Alertmanagers dans Prometheus ==="
+          CLUSTER_IP=$(hostname -I | awk '{print $1}')
+          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/alertmanagers" | jq .
+          
+          echo "=== Configuration des règles ==="
+          kubectl -n monitoring get prometheusrules -o yaml
 
       - name: 📩 Tester les notifications
         run: |
