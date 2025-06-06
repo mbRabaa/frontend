@@ -535,7 +535,7 @@ jobs:
                   summary: "High memory usage on {{ \$labels.instance }}"
                   description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
               - alert: HighCPUUsage
-                expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 80
+                expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))) * 100 > 80
                 for: 5m
                 labels:
                   severity: warning
