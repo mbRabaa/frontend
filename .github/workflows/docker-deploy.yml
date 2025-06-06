@@ -1,4 +1,4 @@
-name: Chaine CI/CD 
+name: Chaine DevOps
 
 on:
   push:
