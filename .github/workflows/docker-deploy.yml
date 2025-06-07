@@ -526,18 +526,9 @@ jobs:
                 requireTLS: true
           EOF
 
-      - name: 🔍 Vérifier la configuration Prometheus
+      - name: 🚨 Déployer les règles d'alerte (version finale corrigée)
         run: |
-          echo "=== Vérification des sélecteurs de règles ==="
-          kubectl -n monitoring get prometheus -o jsonpath='{.items[0].spec.ruleSelector}'
-          echo ""
-          
-          echo "=== Vérification des labels des règles ==="
-          kubectl -n monitoring get prometheusrules --show-labels
-
-      - name: 🚨 Déployer les règles d'alerte 
-        run: |
-         kubectl apply -n monitoring -f - <<'EOF'
+         cat <<EOF | kubectl apply -n monitoring -f -
          apiVersion: monitoring.coreos.com/v1
          kind: PrometheusRule
          metadata:
@@ -558,24 +549,24 @@ jobs:
               labels:
                 severity: critical
               annotations:
-                summary: "Node {{ \$labels.instance }} is down"
-                description: "Le noeud {{ \$labels.instance }} ne répond pas depuis 1 minute"
+                summary: Node down
+                description: Node \${labels.instance} is down
             - alert: HighMemoryUsage
               expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
               for: 5m
               labels:
                 severity: warning
               annotations:
-                summary: "High memory usage on {{ \$labels.instance }}"
-                description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
+                summary: High memory usage
+                description: Memory usage is \${value}% on \${labels.instance}
             - alert: HighCPUUsage
-              expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+              expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 80
               for: 5m
               labels:
                 severity: warning
               annotations:
-                summary: "High CPU usage on {{ \$labels.instance }}"
-                description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes" 
+                summary: High CPU usage
+                description: CPU usage is \${value}% on \${labels.instance} 
                 EOF
 
       - name: 🔄 Vérifier les règles d'alerte 
