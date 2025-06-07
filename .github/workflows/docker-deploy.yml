@@ -513,17 +513,17 @@ jobs:
               groupWait: 30s
               groupInterval: 5m
               repeatInterval: 12h
-          receivers:
-          - name: 'email-notifications'
-            emailConfigs:
-            - to: '${{ secrets.SMTP_USER }}'
-              from: '${{ secrets.SMTP_USER }}'
-              smarthost: 'smtp.gmail.com:587'
-              authUsername: '${{ secrets.SMTP_USER }}'
-              authPassword:
-                key: smtp-password
-                name: alertmanager-smtp-secret
-              requireTLS: true
+            receivers:
+            - name: 'email-notifications'
+              emailConfigs:
+              - to: '${{ secrets.SMTP_USER }}'
+                from: '${{ secrets.SMTP_USER }}'
+                smarthost: 'smtp.gmail.com:587'
+                authUsername: '${{ secrets.SMTP_USER }}'
+                authPassword:
+                  key: smtp-password
+                  name: alertmanager-smtp-secret
+                requireTLS: true
           EOF
 
       - name: 🔍 Vérifier la configuration Prometheus
