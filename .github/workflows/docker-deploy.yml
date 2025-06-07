@@ -33,6 +33,8 @@ env:
   GRAFANA_PORT: 30091
   PROMETHEUS_PORT: 30090
   ALERTMANAGER_PORT: 30092
+  GRAFANA_ADMIN_USER: ${{ secrets.GRAFANA_ADMIN_USER }}
+  GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
 
   # Alertmanager
   SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -450,6 +452,7 @@ jobs:
           EOF
 
       - name: ⎈ Installer Prometheus+Grafana avec Helm
+        timeout-minutes: 15
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
@@ -491,49 +494,46 @@ jobs:
           kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus --tail=50
           exit 1
 
-      - name: 🚨 Déployer les règles d'alerte (Version Finale Testée)
+      - name: 🚨 Déployer les règles d'alerte (Version Corrigée)
         run: |
-         cat > cluster-alerts.yaml <<'EOL'
-         apiVersion: monitoring.coreos.com/v1
-         kind: PrometheusRule
-         metadata:
-          name: cluster-alerts
-          namespace: monitoring
-          labels:
-            release: monitoring
-            app: kube-prometheus-stack
-         spec:
-          groups:
-          - name: cluster-health
-            rules:
-            - alert: NodeDown
-              expr: up == 0
-              for: 1m
-              labels:
-                severity: critical
-              annotations:
-                summary: "Node down"
-                description: "Node {{ $labels.instance }} is down"
-            - alert: HighMemoryUsage
-              expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
-              for: 5m
-              labels:
-                severity: warning
-              annotations:
-                summary: "High memory usage"
-                description: "Memory usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
-            - alert: HighCPUUsage
-              expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-              for: 5m
-              labels:
-                severity: warning
-              annotations:
-                summary: "High CPU usage"
-                description: "CPU usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
-          EOL
-
-         kubectl apply -n monitoring -f cluster-alerts.yaml
-         rm cluster-alerts.yaml
+          kubectl apply -n monitoring -f - <<EOF
+          apiVersion: monitoring.coreos.com/v1
+          kind: PrometheusRule
+          metadata:
+            name: cluster-alerts
+            namespace: monitoring
+            labels:
+              release: monitoring
+              app: kube-prometheus-stack
+          spec:
+            groups:
+            - name: cluster-health
+              rules:
+              - alert: NodeDown
+                expr: up == 0
+                for: 1m
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "Node down"
+                  description: "Node {{ \$labels.instance }} is down"
+              - alert: HighMemoryUsage
+                expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "High memory usage"
+                  description: "Memory usage is {{ \$value | humanizePercentage }} on {{ \$labels.instance }}"
+              - alert: HighCPUUsage
+                expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "High CPU usage"
+                  description: "CPU usage is {{ \$value | humanizePercentage }} on {{ \$labels.instance }}"
+          EOF
 
       - name: 🔄 Vérifier les règles d'alerte 
         run: |
@@ -545,7 +545,7 @@ jobs:
             wget -qO- http://localhost:9090/api/v1/rules | jq .
           
           echo "=== Logs de l'opérateur ==="
-          kubectl -n monitoring logs -l app=kube-prometheus-stack-operator --tail=50
+          kubectl -n monitoring logs -l app.kubernetes.io/name=kube-prometheus-stack-operator --tail=50
           
           echo "=== Forcer le rechargement ==="
           kubectl -n monitoring rollout restart deployment monitoring-kube-prometheus-operator
