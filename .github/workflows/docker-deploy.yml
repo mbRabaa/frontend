@@ -471,7 +471,9 @@ jobs:
             --set prometheus.prometheusSpec.alertmanagerConfigNamespaceSelector.matchLabels.name="monitoring" \
             --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
             --set prometheus.prometheusSpec.ruleSelector.matchLabels.release="monitoring" \
-            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring"
+            --set prometheus.prometheusSpec.ruleSelector.matchLabels.app="kube-prometheus-stack" \
+            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
+            --set prometheusOperator.prometheusConfigReloader.enabled=true
 
       - name: ⏳ Attendre que Prometheus soit prêt
         run: |
@@ -511,56 +513,29 @@ jobs:
               groupWait: 30s
               groupInterval: 5m
               repeatInterval: 12h
-            receivers:
-            - name: 'email-notifications'
-              emailConfigs:
-              - to: '${{ secrets.SMTP_USER }}'
-                from: '${{ secrets.SMTP_USER }}'
-                smarthost: 'smtp.gmail.com:587'
-                authUsername: '${{ secrets.SMTP_USER }}'
-                authPassword:
-                  key: smtp-password
-                  name: alertmanager-smtp-secret
-                requireTLS: true
+          receivers:
+          - name: 'email-notifications'
+            emailConfigs:
+            - to: '${{ secrets.SMTP_USER }}'
+              from: '${{ secrets.SMTP_USER }}'
+              smarthost: 'smtp.gmail.com:587'
+              authUsername: '${{ secrets.SMTP_USER }}'
+              authPassword:
+                key: smtp-password
+                name: alertmanager-smtp-secret
+              requireTLS: true
           EOF
 
-          # Vérifier que la configuration a été appliquée
-          kubectl -n monitoring get alertmanagerconfigs
-
-      - name: 🔍 Vérification approfondie
+      - name: 🔍 Vérifier la configuration Prometheus
         run: |
-          echo "=== Vérification des AlertmanagerConfigs ==="
-          kubectl -n monitoring get alertmanagerconfigs -o yaml
+          echo "=== Vérification des sélecteurs de règles ==="
+          kubectl -n monitoring get prometheus -o jsonpath='{.items[0].spec.ruleSelector}'
+          echo ""
           
-          echo "=== Vérification des Secrets ==="
-          kubectl -n monitoring get secrets
-          
-          echo "=== Vérification des Pods Alertmanager ==="
-          kubectl -n monitoring get pods -l app=alertmanager
-          
-          echo "=== Vérification des Endpoints ==="
-          kubectl -n monitoring get endpoints
-          
-          echo "=== Vérification de la configuration Prometheus ==="
-          kubectl -n monitoring exec $(kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}') -- cat /etc/prometheus/prometheus.yml | grep alertmanager -A10
+          echo "=== Vérification des labels des règles ==="
+          kubectl -n monitoring get prometheusrules --show-labels
 
-      - name: 🔍 Vérifier la connexion Prometheus-AlertManager
-        run: |
-          echo "=== Vérification des services ==="
-          kubectl -n monitoring get svc alertmanager
-          kubectl -n monitoring get endpoints alertmanager
-          
-          echo "=== Configuration Prometheus ==="
-          kubectl -n monitoring get prometheus -o yaml
-          
-          echo "=== ServiceMonitors ==="
-          kubectl -n monitoring get servicemonitors
-          
-          echo "=== Statut des Alertmanagers dans Prometheus ==="
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/alertmanagers" | jq .
-
-      - name: 🚨 Déployer les règles d'alerte
+      - name: 🚨 Déployer les règles d'alerte (version corrigée)
         run: |
           kubectl apply -n monitoring -f - <<EOF
           apiVersion: monitoring.coreos.com/v1
@@ -571,6 +546,8 @@ jobs:
             labels:
               release: monitoring
               app: kube-prometheus-stack
+              k8s-app: kube-prometheus-stack
+              heritage: Helm
           spec:
             groups:
             - name: cluster-health
@@ -601,38 +578,21 @@ jobs:
                   description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
           EOF
 
-      - name: 🔄 Vérifier les règles d'alerte
+      - name: 🔄 Vérifier les règles d'alerte (version améliorée)
         run: |
           echo "=== Vérification des règles déployées ==="
-          kubectl -n monitoring get prometheusrules -o wide
+          kubectl -n monitoring get prometheusrules -o wide --show-labels
           
-          echo "=== Attente de 30s pour la synchronisation des règles ==="
+          echo "=== Vérification interne des règles ==="
+          kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -c prometheus -- \
+            wget -qO- http://localhost:9090/api/v1/rules | jq .
+          
+          echo "=== Logs de l'opérateur ==="
+          kubectl -n monitoring logs -l app=kube-prometheus-stack-operator --tail=50
+          
+          echo "=== Forcer le rechargement ==="
+          kubectl -n monitoring rollout restart deployment monitoring-kube-prometheus-operator
           sleep 30
-          
-          echo "=== Liste des règles dans Prometheus ==="
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/rules" | jq .data.groups || echo "Aucune règle trouvée"
-          
-          echo "=== Logs du Prometheus Operator ==="
-          kubectl -n monitoring logs -l app.kubernetes.io/name=kube-prometheus-stack-operator --tail=20
-
-      - name: 🔍 Vérifier la configuration finale
-        run: |
-          echo "=== Configuration Prometheus ==="
-          kubectl -n monitoring get prometheus -o yaml
-          
-          echo "=== Configuration Alertmanager ==="
-          kubectl -n monitoring get secret alertmanager-config -o jsonpath='{.data.alertmanager\.yml}' | base64 -d
-          
-          echo "=== Endpoints Alertmanager ==="
-          kubectl -n monitoring get endpoints alertmanager
-          
-          echo "=== Statut des Alertmanagers dans Prometheus ==="
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          curl -s "http://$CLUSTER_IP:$PROMETHEUS_PORT/api/v1/alertmanagers" | jq .
-          
-          echo "=== Configuration des règles ==="
-          kubectl -n monitoring get prometheusrules -o yaml
 
       - name: 📩 Tester les notifications
         run: |
