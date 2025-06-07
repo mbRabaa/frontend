@@ -491,44 +491,9 @@ jobs:
           kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus --tail=50
           exit 1
 
-      - name: 🛠️ Configurer Alertmanager pour Prometheus
+      - name: 🚨 Déployer les règles d'alerte (Version Finale Testée)
         run: |
-          # Créer le secret SMTP
-          kubectl -n monitoring create secret generic alertmanager-smtp-secret \
-            --from-literal=smtp-password="${{ secrets.SMTP_PASSWORD }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          # Appliquer la configuration Alertmanager
-          kubectl apply -n monitoring -f - <<EOF
-          apiVersion: monitoring.coreos.com/v1alpha1
-          kind: AlertmanagerConfig
-          metadata:
-            name: monitoring-alertmanager-config
-            labels:
-              release: monitoring
-          spec:
-            route:
-              receiver: 'email-notifications'
-              groupBy: ['alertname']
-              groupWait: 30s
-              groupInterval: 5m
-              repeatInterval: 12h
-            receivers:
-            - name: 'email-notifications'
-              emailConfigs:
-              - to: '${{ secrets.SMTP_USER }}'
-                from: '${{ secrets.SMTP_USER }}'
-                smarthost: 'smtp.gmail.com:587'
-                authUsername: '${{ secrets.SMTP_USER }}'
-                authPassword:
-                  key: smtp-password
-                  name: alertmanager-smtp-secret
-                requireTLS: true
-          EOF
-
-      - name: 🚨 Déployer les règles d'alerte (version finale corrigée)
-        run: |
-         cat <<EOF | kubectl apply -n monitoring -f -
+         cat > cluster-alerts.yaml <<'EOL'
          apiVersion: monitoring.coreos.com/v1
          kind: PrometheusRule
          metadata:
@@ -537,8 +502,6 @@ jobs:
           labels:
             release: monitoring
             app: kube-prometheus-stack
-            k8s-app: kube-prometheus-stack
-            heritage: Helm
          spec:
           groups:
           - name: cluster-health
@@ -549,25 +512,28 @@ jobs:
               labels:
                 severity: critical
               annotations:
-                summary: Node down
-                description: Node \${labels.instance} is down
+                summary: "Node down"
+                description: "Node {{ $labels.instance }} is down"
             - alert: HighMemoryUsage
               expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
               for: 5m
               labels:
                 severity: warning
               annotations:
-                summary: High memory usage
-                description: Memory usage is \${value}% on \${labels.instance}
+                summary: "High memory usage"
+                description: "Memory usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
             - alert: HighCPUUsage
-              expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 80
+              expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
               for: 5m
               labels:
                 severity: warning
               annotations:
-                summary: High CPU usage
-                description: CPU usage is \${value}% on \${labels.instance} 
-                EOF
+                summary: "High CPU usage"
+                description: "CPU usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+          EOL
+
+         kubectl apply -n monitoring -f cluster-alerts.yaml
+         rm cluster-alerts.yaml
 
       - name: 🔄 Vérifier les règles d'alerte 
         run: |
