@@ -541,42 +541,41 @@ jobs:
           apiVersion: monitoring.coreos.com/v1
           kind: PrometheusRule
           metadata:
-            name: cluster-alerts
-            namespace: monitoring
-            labels:
-              release: monitoring
-              app: kube-prometheus-stack
-              k8s-app: kube-prometheus-stack
-              heritage: Helm
+          name: cluster-alerts
+          namespace: monitoring
+          labels:
+          release: monitoring               # Required
+          app: kube-prometheus-stack        # Required
+          k8s-app: kube-prometheus-stack    # Optional
+          heritage: Helm                    # Optional
           spec:
-            groups:
-            - name: cluster-health
-              rules:
-              - alert: NodeDown
-                expr: up == 0
-                for: 1m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Node {{ \$labels.instance }} is down"
-                  description: "Le noeud {{ \$labels.instance }} ne répond pas depuis 1 minute"
-              - alert: HighMemoryUsage
-                expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High memory usage on {{ \$labels.instance }}"
-                  description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
-              - alert: HighCPUUsage
-                expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))) * 100 > 80
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High CPU usage on {{ \$labels.instance }}"
-                  description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
-          EOF
+          groups:
+          - name: cluster-health
+          rules:
+          - alert: NodeDown
+          expr: up == 0
+          for: 1m
+          labels:
+           severity: critical
+           annotations:
+            summary: "Node {{ \$labels.instance }} is down"
+           description: "Le noeud {{ \$labels.instance }} ne répond pas depuis 1 minute"
+          - alert: HighMemoryUsage
+           expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+           summary: "High memory usage on {{ \$labels.instance }}"
+           description: "Utilisation mémoire à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes"
+          - alert: HighCPUUsage
+          expr: (100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))) * 100 > 80
+          for: 5m
+          labels:
+          severity: warning
+          annotations:
+          summary: "High CPU usage on {{ \$labels.instance }}"
+           description: "Utilisation CPU à {{ \$value | printf \"%.2f\" }}% depuis 5 minutes" EOF
 
       - name: 🔄 Vérifier les règles d'alerte (version améliorée)
         run: |
