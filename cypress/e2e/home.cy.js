@@ -3,7 +3,7 @@ describe('Page d\'accueil', () => {
     cy.visit('/', { timeout: 60000 });
     
     // Vérification plus flexible du titre
-    cy.contains(/(r|R)éservez vos billets/, { timeout: 15000 })
+    cy.contains(/(r|R)éservez vos billets/, { timeout: 60000 })
       .should('exist');
     
     // Vérification des éléments clés

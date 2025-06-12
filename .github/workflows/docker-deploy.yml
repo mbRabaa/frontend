@@ -229,37 +229,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       
-      - name: 🛠️ Configuration K3s
-        run: |
-          set -x
-          sudo k3s-uninstall.sh || true
-          sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /var/lib/cni /etc/cni/net.d/*
-          
-          curl -sfL https://get.k3s.io | \
-            INSTALL_K3S_VERSION=$K3S_VERSION \
-            sh -s - \
-            --write-kubeconfig-mode 644 \
-            --disable traefik \
-            --node-ip $(hostname -I | awk '{print $1}') \
-            --docker
-
-      - name: 🔧 Configuration kubectl
-        run: |
+      -  name: Configure kubeconfig
+         run: |
           mkdir -p ~/.kube
-          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-          sudo chown $USER:$USER ~/.kube/config
-          sudo chmod 600 ~/.kube/config
-          sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
-          
-          kubectl cluster-info
-          kubectl get nodes -o wide
+          echo "${{ secrets.KUBECONFIG}}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl get nodes   
 
-      - name: 📌 Sauvegarde révision actuelle
-        id: save-revision
-        run: |
-          CURRENT_REVISION=$(kubectl get deployment frontend-deployment -n frontend -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "0")
-          echo "CURRENT_REVISION=$CURRENT_REVISION" >> $GITHUB_ENV
-          echo "Révision actuelle sauvegardée: $CURRENT_REVISION"
+      - name: Verify cluster access
+        run: kubectl cluster-info
 
       - name: 🚀 Déploiement K8s (Production)
         run: |
