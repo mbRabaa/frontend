@@ -1,4 +1,4 @@
-name: chaine DevOps CI-CD 
+name: chaine DevOps complete
 
 on:
   push:
