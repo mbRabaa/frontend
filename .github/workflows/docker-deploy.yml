@@ -350,225 +350,126 @@ jobs:
           echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
 
   cluster-monitoring:
-    needs: deploy-k3s
-    runs-on: self-hosted
-    timeout-minutes: 30
-    
-    steps:
-      - name: 🔧 Configurer kubectl
-        run: |
-          mkdir -p ~/.kube
-          sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-          sudo chown $USER:$USER ~/.kube/config
-          sed -i "s/127.0.0.1/$(hostname -I | awk '{print $1}')/g" ~/.kube/config
+  needs: deploy-k3s
+  runs-on: self-hosted
+  timeout-minutes: 30
+  env:
+    ALERTMANAGER_PORT: 30092
+    PROMETHEUS_PORT: 30090
+    GRAFANA_PORT: 30091
 
-      - name: 📥 Télécharger les fichiers de configuration
-        uses: actions/checkout@v4
+  steps:
+    - name: 🔧 Configurer kubectl
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+        chmod 600 ~/.kube/config
+        kubectl cluster-info
 
-      - name: 🛠️ Déployer AlertManager (sans Helm)
-        run: |
-          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+    - name: 📥 Télécharger les fichiers de configuration
+      uses: actions/checkout@v4
+      with:
+        path: 'monitoring-config'
 
-          sed \
-            -e "s|\${{ secrets.SMTP_USER }}|${{ secrets.SMTP_USER }}|g" \
-            -e "s|\${{ secrets.SMTP_PASSWORD }}|${{ secrets.SMTP_PASSWORD }}|g" \
-            monitoring-config/alertmanager-config.yml > alertmanager-resolved.yml
+    - name: 🛠️ Déployer AlertManager
+      run: |
+        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Appliquer la configuration AlertManager
+        kubectl -n monitoring create secret generic alertmanager-config \
+          --from-file=alertmanager.yml=monitoring-config/alertmanager/alertmanager-config.yml \
+          --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Déployer AlertManager
+        kubectl apply -f monitoring-config/alertmanager/alertmanager-deployment.yml
 
-          kubectl -n monitoring create secret generic alertmanager-config \
-            --from-file=alertmanager.yml=alertmanager-resolved.yml \
-            --dry-run=client -o yaml | kubectl apply -f -
+    - name: ⎈ Installer Prometheus+Grafana avec Helm
+      timeout-minutes: 15
+      run: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          -f monitoring-config/kube-prometheus-stack-values.yml \
+          --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
+          --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+          --set prometheus.service.type=NodePort \
+          --set prometheus.service.nodePort=$PROMETHEUS_PORT \
+          --set grafana.service.type=NodePort \
+          --set grafana.service.nodePort=$GRAFANA_PORT \
+          --set alertmanager.enabled=false \
+          --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2" \
+          --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
+          --set prometheus.prometheusSpec.alerting.alertmanagers[0].staticConfigs[0].targets[0]="alertmanager.monitoring.svc:9093" \
+          --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
+          --set prometheus.prometheusSpec.alerting.alertmanagers[0].timeout="10s" \
+          --set prometheus.prometheusSpec.alertmanagerConfigSelector.matchLabels.release="monitoring" \
+          --set prometheus.prometheusSpec.alertmanagerConfigNamespaceSelector.matchLabels.name="monitoring" \
+          --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
+          --set prometheus.prometheusSpec.ruleSelector.matchLabels.release="monitoring" \
+          --set prometheus.prometheusSpec.ruleSelector.matchLabels.app="kube-prometheus-stack" \
+          --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
+          --set prometheusOperator.prometheusConfigReloader.enabled=true \
+          --wait
 
-          kubectl apply -f - <<EOF
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: alertmanager
-            namespace: monitoring
-          spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: alertmanager
-            template:
-              metadata:
-                labels:
-                  app: alertmanager
-              spec:
-                containers:
-                - name: alertmanager
-                  image: quay.io/prometheus/alertmanager:v0.25.0
-                  args:
-                  - '--config.file=/etc/alertmanager/alertmanager.yml'
-                  - '--storage.path=/alertmanager'
-                  ports:
-                  - containerPort: 9093
-                    name: http
-                  volumeMounts:
-                  - name: config
-                    mountPath: /etc/alertmanager
-                volumes:
-                - name: config
-                  secret:
-                    secretName: alertmanager-config
-          EOF
+    - name: ⏳ Attendre que Prometheus soit prêt
+      run: |
+        for i in {1..30}; do
+          if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; then
+            echo "✅ Prometheus est en cours d'exécution"
+            sleep 30  # Donner du temps supplémentaire pour l'initialisation
+            exit 0
+          fi
+          sleep 10
+          echo "⌛ Tentative $i/30 - En attente du démarrage de Prometheus..."
+        done
+        echo "❌ Prometheus n'a pas démarré après 5 minutes"
+        exit 1
 
-          kubectl apply -f - <<EOF
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: alertmanager
-            namespace: monitoring
-          spec:
-            type: NodePort
-            ports:
-            - name: web
-              port: 9093
-              targetPort: 9093
-              nodePort: $ALERTMANAGER_PORT
-            selector:
-              app: alertmanager
-          EOF
+    - name: 🚨 Déployer les règles d'alerte
+      run: |
+        kubectl apply -f monitoring-config/prometheus/alert-rules.yml
+        sleep 15  # Attendre le rechargement des règles
 
-      - name: ⎈ Installer Prometheus+Grafana avec Helm
-        timeout-minutes: 15
-        run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo update
-          helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-            --namespace monitoring \
-            --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
-            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
-            --set prometheus.service.type=NodePort \
-            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
-            --set grafana.service.type=NodePort \
-            --set grafana.service.nodePort=$GRAFANA_PORT \
-            --set alertmanager.enabled=false \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].staticConfigs[0].targets[0]="alertmanager.monitoring.svc:9093" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
-            --set prometheus.prometheusSpec.alerting.alertmanagers[0].timeout="10s" \
-            --set prometheus.prometheusSpec.alertmanagerConfigSelector.matchLabels.release="monitoring" \
-            --set prometheus.prometheusSpec.alertmanagerConfigNamespaceSelector.matchLabels.name="monitoring" \
-            --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
-            --set prometheus.prometheusSpec.ruleSelector.matchLabels.release="monitoring" \
-            --set prometheus.prometheusSpec.ruleSelector.matchLabels.app="kube-prometheus-stack" \
-            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
-            --set prometheusOperator.prometheusConfigReloader.enabled=true
+    - name: 🔄 Vérifier les règles d'alerte
+      run: |
+        echo "=== Vérification des règles déployées ==="
+        kubectl -n monitoring get prometheusrules -o wide
+        echo "=== Contenu des règles dans Prometheus ==="
+        kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -- \
+          wget -qO- http://localhost:9090/api/v1/rules | jq .
 
-      - name: ⏳ Attendre que Prometheus soit prêt
-        run: |
-          for i in {1..30}; do
-            if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; then
-              echo "✅ Prometheus est en cours d'exécution"
-              sleep 30
-              exit 0
-            fi
-            sleep 10
-            echo "⌛ Tentative $i/30 - En attente du démarrage de Prometheus..."
-          done
-          echo "❌ Prometheus n'a pas démarré après 5 minutes"
-          kubectl -n monitoring describe pods -l app.kubernetes.io/name=prometheus
-          kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus --tail=50
-          exit 1
+    - name: 📩 Tester les notifications
+      run: |
+        ALERTMANAGER_URL="http://$(kubectl -n monitoring get svc alertmanager -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):$ALERTMANAGER_PORT"
+        echo "=== Envoi d'alerte test à $ALERTMANAGER_URL ==="
+        curl -X POST "$ALERTMANAGER_URL/api/v2/alerts" -H "Content-Type: application/json" -d '[
+          {
+            "labels": { "alertname": "TestAlert", "severity": "warning" },
+            "annotations": { "summary": "Test", "description": "This is a test alert" }
+          }
+        ]'
+        sleep 5
+        echo "=== Alertes actives ==="
+        curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
 
-      - name: 🚨 Déployer les règles d'alerte (Version Corrigée)
-        run: |
-          kubectl apply -n monitoring -f - <<EOF
-          apiVersion: monitoring.coreos.com/v1
-          kind: PrometheusRule
-          metadata:
-            name: cluster-alerts
-            namespace: monitoring
-            labels:
-              release: monitoring
-              app: kube-prometheus-stack
-          spec:
-            groups:
-            - name: cluster-health
-              rules:
-              - alert: NodeDown
-                expr: up == 0
-                for: 1m
-                labels:
-                  severity: critical
-                annotations:
-                  summary: "Node down"
-                  description: "Node {{ \$labels.instance }} is down"
-              - alert: HighMemoryUsage
-                expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High memory usage"
-                  description: "Memory usage is {{ \$value | humanizePercentage }} on {{ \$labels.instance }}"
-              - alert: HighCPUUsage
-                expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-                for: 5m
-                labels:
-                  severity: warning
-                annotations:
-                  summary: "High CPU usage"
-                  description: "CPU usage is {{ \$value | humanizePercentage }} on {{ \$labels.instance }}"
-          EOF
-
-      - name: 🔄 Vérifier les règles d'alerte 
-        run: |
-          echo "=== Vérification des règles déployées ==="
-          kubectl -n monitoring get prometheusrules -o wide --show-labels
-          
-          echo "=== Vérification interne des règles ==="
-          kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -c prometheus -- \
-            wget -qO- http://localhost:9090/api/v1/rules | jq .
-          
-          echo "=== Logs de l'opérateur ==="
-          kubectl -n monitoring logs -l app.kubernetes.io/name=kube-prometheus-stack-operator --tail=50
-          
-          echo "=== Forcer le rechargement ==="
-          kubectl -n monitoring rollout restart deployment monitoring-kube-prometheus-operator
-          sleep 30
-
-      - name: 📩 Tester les notifications
-        run: |
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          ALERTMANAGER_URL="http://$CLUSTER_IP:$ALERTMANAGER_PORT"
-          
-          echo "=== Envoi d'alerte test ==="
-          curl -X POST "$ALERTMANAGER_URL/api/v2/alerts" -H "Content-Type: application/json" -d '[
-            {
-              "labels": {
-                "alertname": "TestAlert",
-                "severity": "warning"
-              },
-              "annotations": {
-                "summary": "Test d'\''alerte",
-                "description": "Ceci est un test"
-              }
-            }
-          ]'
-          
-          sleep 5
-          echo "=== Alertes actives ==="
-          curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
-
-      - name: 🌐 Afficher les accès
-        run: |
-          CLUSTER_IP=$(hostname -I | awk '{print $1}')
-          cat <<EOF
-          ================================================
-          🔔 MONITORING STACK OPÉRATIONNEL
-          ================================================
-          
-          📊 Accès aux interfaces :
-          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
-          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
-          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
-          
-          🔑 Identifiants Grafana:
-          - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}
-          - Mot de passe: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-          
-          📧 Notifications envoyées à: ${{ secrets.SMTP_USER }}
-          ================================================
-          EOF
+    - name: 🌐 Afficher les accès
+      run: |
+        CLUSTER_IP=$(kubectl -n monitoring get svc alertmanager -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        cat <<EOF
+        ================================================
+        🔔 MONITORING STACK OPÉRATIONNEL
+        ================================================
+        
+        📊 Accès aux interfaces :
+        - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
+        - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
+        - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
+        
+        🔑 Identifiants Grafana:
+        - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}
+        - Mot de passe: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        
+        📧 Notifications envoyées à: ${{ secrets.SMTP_USER }}
+        ================================================
+        EOF

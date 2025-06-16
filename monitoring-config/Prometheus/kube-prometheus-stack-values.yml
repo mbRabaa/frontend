@@ -1,0 +1,16 @@
+alertmanager:
+  enabled: false  # On utilise notre déploiement personnalisé
+
+prometheus:
+  prometheusSpec:
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+    alertmanagers:
+    - namespace: monitoring
+      name: alertmanager
+      port: web
+
+grafana:
+  adminUser: "${{ secrets.GRAFANA_ADMIN_USER }}"
+  adminPassword: "${{ secrets.GRAFANA_ADMIN_PASSWORD }}"

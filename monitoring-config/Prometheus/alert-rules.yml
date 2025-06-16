@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+    app: kube-prometheus-stack
+spec:
+  groups:
+  - name: cluster-health
+    rules:
+    - alert: NodeDown
+      expr: up == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Node down"
+        description: "Node {{ $labels.instance }} is down"
+    
+    - alert: HighMemoryUsage
+      expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage"
+        description: "Memory usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
