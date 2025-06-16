@@ -381,6 +381,7 @@ jobs:
           [ -f "monitoring-config/Prometheus/alert-rules.yml" ] || { echo "::error::Fichier alert-rules.yml manquant"; exit 1; }
 
       - name: 🛠️ Déployer AlertManager
+        timeout-minutes: 10
         run: |
           kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
           
