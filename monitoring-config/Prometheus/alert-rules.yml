@@ -4,26 +4,17 @@ metadata:
   name: cluster-alerts
   namespace: monitoring
   labels:
-    release: monitoring
+    release: monitoring  # Doit correspondre au label utilisé dans Helm
     app: kube-prometheus-stack
 spec:
   groups:
-  - name: cluster-health
+  - name: cluster-alerts
     rules:
-    - alert: NodeDown
-      expr: up == 0
-      for: 1m
+    - alert: HighMemoryUsage
+      expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10
+      for: 5m
       labels:
         severity: critical
       annotations:
-        summary: "Node down"
-        description: "Node {{ $labels.instance }} is down"
-    
-    - alert: HighMemoryUsage
-      expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
-      for: 5m
-      labels:
-        severity: warning
-      annotations:
-        summary: "High memory usage"
-        description: "Memory usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+        summary: "High memory usage on {{ $labels.instance }}"
+        description: "Memory available is less than 10% on {{ $labels.instance }}"

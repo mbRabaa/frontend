@@ -391,6 +391,9 @@ jobs:
           
           # Déployer AlertManager
           kubectl apply -f monitoring-config/alertmanager/alertmanager-deployment.yml
+          
+          # Vérifier que AlertManager est prêt
+          kubectl -n monitoring wait --for=condition=ready pod -l app=alertmanager --timeout=120s
 
       - name: ⎈ Installer Prometheus+Grafana avec Helm
         timeout-minutes: 15
@@ -425,6 +428,8 @@ jobs:
           for i in {1..30}; do
             if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; then
               echo "✅ Prometheus est en cours d'exécution"
+              # Attendre que Prometheus soit vraiment prêt
+              kubectl -n monitoring wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus --timeout=120s
               sleep 30
               exit 0
             fi
@@ -437,42 +442,64 @@ jobs:
       - name: 🚨 Déployer les règles d'alerte
         run: |
           kubectl apply -f monitoring-config/Prometheus/alert-rules.yml
-          sleep 15
+          # Vérifier que les règles sont bien créées
+          kubectl -n monitoring get prometheusrules -o yaml
+          sleep 30  # Donner du temps à Prometheus pour charger les règles
 
       - name: 🔄 Vérifier les règles d'alerte
         run: |
           echo "=== Vérification des règles déployées ==="
-          kubectl -n monitoring get prometheusrules -o wide
+          kubectl -n monitoring get prometheusrules -o yaml
+          
           echo "=== Contenu des règles dans Prometheus ==="
-          kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -- \
-            wget -qO- http://localhost:9090/api/v1/rules | jq .
+          # Utiliser port-forward pour accéder à l'API Prometheus
+          kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090 &
+          sleep 5
+          curl -s "http://localhost:9090/api/v1/rules" | jq .
+          pkill -f "port-forward"
+          
+          # Vérifier les logs de Prometheus pour les erreurs de règles
+          kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus | grep -i rule
 
       - name: 📩 Tester les notifications
         run: |
-          ALERTMANAGER_URL="http://$(kubectl -n monitoring get svc alertmanager -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):$ALERTMANAGER_PORT"
-          echo "=== Envoi d'alerte test à $ALERTMANAGER_URL ==="
-          curl -X POST "$ALERTMANAGER_URL/api/v2/alerts" -H "Content-Type: application/json" -d '[
+          # Utiliser le port-forward pour accéder à AlertManager
+          kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &
+          sleep 5
+          
+          echo "=== Envoi d'alerte test ==="
+          curl -X POST "http://localhost:9093/api/v2/alerts" -H "Content-Type: application/json" -d '[
             {
-              "labels": { "alertname": "TestAlert", "severity": "warning" },
-              "annotations": { "summary": "Test", "description": "This is a test alert" }
+              "labels": { 
+                "alertname": "TestAlert", 
+                "severity": "warning",
+                "namespace": "monitoring"
+              },
+              "annotations": { 
+                "summary": "Test Alert", 
+                "description": "This is a test alert from GitHub Actions" 
+              }
             }
           ]'
+          
           sleep 5
           echo "=== Alertes actives ==="
-          curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
+          curl -s "http://localhost:9093/api/v2/alerts" | jq .
+          
+          pkill -f "port-forward"
 
       - name: 🌐 Afficher les accès
         run: |
-          CLUSTER_IP=$(kubectl -n monitoring get svc alertmanager -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
           cat <<EOF
           ================================================
           🔔 MONITORING STACK OPÉRATIONNEL
           ================================================
           
           📊 Accès aux interfaces :
-          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
-          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
-          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
+          - Prometheus:    http://$NODE_IP:$PROMETHEUS_PORT
+          - AlertManager:  http://$NODE_IP:$ALERTMANAGER_PORT
+          - Grafana:       http://$NODE_IP:$GRAFANA_PORT
           
           🔑 Identifiants Grafana:
           - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}

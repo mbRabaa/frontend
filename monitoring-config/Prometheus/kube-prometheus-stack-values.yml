@@ -1,5 +1,5 @@
 alertmanager:
-  enabled: false  # On utilise notre déploiement personnalisé
+  enabled: false  
 
 prometheus:
   prometheusSpec:
