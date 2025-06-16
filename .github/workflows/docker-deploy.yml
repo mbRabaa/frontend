@@ -449,45 +449,54 @@ jobs:
       - name: 🔄 Vérifier les règles d'alerte
         run: |
           echo "=== Vérification des règles déployées ==="
+          kubectl -n monitoring get prometheusrules -o wide
+          
+          echo "=== Détail des règles YAML ==="
           kubectl -n monitoring get prometheusrules -o yaml
           
           echo "=== Contenu des règles dans Prometheus ==="
-          # Utiliser port-forward pour accéder à l'API Prometheus
-          kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090 &
-          sleep 5
-          curl -s "http://localhost:9090/api/v1/rules" | jq .
-          pkill -f "port-forward"
+          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          echo "Accès à Prometheus via: http://$NODE_IP:$PROMETHEUS_PORT"
+          
+          # Vérification des règles via l'API Prometheus
+          curl -s "http://$NODE_IP:$PROMETHEUS_PORT/api/v1/rules" | jq .
+          
+          # Vérification spécifique des alertes
+          echo "=== Règles d'alerte actives ==="
+          curl -s "http://$NODE_IP:$PROMETHEUS_PORT/api/v1/alerts" | jq '.data.alerts[] | {state, name}'
           
           # Vérifier les logs de Prometheus pour les erreurs de règles
-          kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus | grep -i rule
+          echo "=== Logs Prometheus (erreurs règles) ==="
+          kubectl -n monitoring logs -l app.kubernetes.io/name=prometheus | grep -i -E 'rule|alert' | tail -20
 
       - name: 📩 Tester les notifications
         run: |
-          # Utiliser le port-forward pour accéder à AlertManager
-          kubectl -n monitoring port-forward svc/alertmanager 9093:9093 &
-          sleep 5
+          # Récupérer l'IP du node
+          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          ALERTMANAGER_URL="http://$NODE_IP:$ALERTMANAGER_PORT"
           
-          echo "=== Envoi d'alerte test ==="
-          curl -X POST "http://localhost:9093/api/v2/alerts" -H "Content-Type: application/json" -d '[
-            {
-              "labels": { 
-                "alertname": "TestAlert", 
-                "severity": "warning",
-                "namespace": "monitoring"
-              },
-              "annotations": { 
-                "summary": "Test Alert", 
-                "description": "This is a test alert from GitHub Actions" 
-              }
-            }
-          ]'
+          echo "=== Envoi d'alerte test à $ALERTMANAGER_URL ==="
+          curl -v -X POST "$ALERTMANAGER_URL/api/v2/alerts" \
+            -H "Content-Type: application/json" \
+            -d '[{
+                "labels": { 
+                  "alertname": "TestAlert",
+                  "severity": "warning",
+                  "namespace": "monitoring"
+                },
+                "annotations": {
+                  "summary": "Alerte de test",
+                  "description": "Ceci est une alerte de test envoyée depuis GitHub Actions"
+                }
+              }]'
           
-          sleep 5
-          echo "=== Alertes actives ==="
-          curl -s "http://localhost:9093/api/v2/alerts" | jq .
+          echo "=== Vérification des alertes actives ==="
+          sleep 5  # Donner le temps à AlertManager de traiter l'alerte
+          curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
           
-          pkill -f "port-forward"
-
+          echo "=== Vérification dans Prometheus ==="
+          PROMETHEUS_URL="http://$NODE_IP:$PROMETHEUS_PORT"
+          curl -s "$PROMETHEUS_URL/api/v1/alerts" | jq '.data.alerts[] | select(.labels.alertname == "TestAlert")'
       - name: 🌐 Afficher les accès
         run: |
           NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
