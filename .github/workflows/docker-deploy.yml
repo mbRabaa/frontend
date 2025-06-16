@@ -367,7 +367,17 @@ jobs:
       - name: 📥 Télécharger les fichiers de configuration
         uses: actions/checkout@v4
         with:
-          path: 'monitoring-config'
+          path: '.'
+
+      - name: 🛠️ Vérifier l'existence des fichiers
+        run: |
+          echo "=== Contenu du dossier monitoring-config ==="
+          ls -la monitoring-config/
+          ls -la monitoring-config/alertmanager/
+          ls -la monitoring-config/Prometheus/
+          [ -f "monitoring-config/alertmanager/alertmanager-config.yml" ] || { echo "::error::Fichier alertmanager-config.yml manquant"; exit 1; }
+          [ -f "monitoring-config/alertmanager/alertmanager-deployment.yml" ] || { echo "::error::Fichier alertmanager-deployment.yml manquant"; exit 1; }
+          [ -f "monitoring-config/Prometheus/alert-rules.yml" ] || { echo "::error::Fichier alert-rules.yml manquant"; exit 1; }
 
       - name: 🛠️ Déployer AlertManager
         run: |
@@ -388,7 +398,6 @@ jobs:
           helm repo update
           helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
-            -f monitoring-config/kube-prometheus-stack-values.yml \
             --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
             --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             --set prometheus.service.type=NodePort \
@@ -426,7 +435,489 @@ jobs:
 
       - name: 🚨 Déployer les règles d'alerte
         run: |
-          kubectl apply -f monitoring-config/prometheus/alert-rules.yml
+          kubectl apply -f monitoring-config/Prometheus/alert-rules.yml
+          sleep 15
+
+      - name: 🔄 Vérifier les règles d'alerte
+        run: |
+          echo "=== Vérification des règles déployées ==="
+          kubectl -n monitoring get prometheusrules -o wide
+          echo "=== Contenu des règles dans Prometheus ==="
+          kubectl -n monitoring exec prometheus-monitoring-kube-prometheus-prometheus-0 -- \
+            wget -qO- http://localhost:9090/api/v1/rules | jq .
+
+      - name: 📩 Tester les notifications
+        run: |
+          ALERTMANAGER_URL="http://$(kubectl -n monitoring get svc alertmanager -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):$ALERTMANAGER_PORT"
+          echo "=== Envoi d'alerte test à $ALERTMANAGER_URL ==="
+          curl -X POST "$ALERTMANAGER_URL/api/v2/alerts" -H "Content-Type: application/json" -d '[
+            {
+              "labels": { "alertname": "TestAlert", "severity": "warning" },
+              "annotations": { "summary": "Test", "description": "This is a test alert" }
+            }
+          ]'
+          sleep 5
+          echo "=== Alertes actives ==="
+          curl -s "$ALERTMANAGER_URL/api/v2/alerts" | jq .
+
+      - name: 🌐 Afficher les accès
+        run: |
+          CLUSTER_IP=$(kubectl -n monitoring get svc alertmanager -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          cat <<EOF
+          ================================================
+          🔔 MONITORING STACK OPÉRATIONNEL
+          ================================================
+          
+          📊 Accès aux interfaces :
+          - Prometheus:    http://$CLUSTER_IP:$PROMETHEUS_PORT
+          - AlertManager:  http://$CLUSTER_IP:$ALERTMANAGER_PORT
+          - Grafana:       http://$CLUSTER_IP:$GRAFANA_PORT
+          
+          🔑 Identifiants Grafana:
+          - Utilisateur: ${{ secrets.GRAFANA_ADMIN_USER }}
+          - Mot de passe: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          
+          📧 Notifications envoyées à: ${{ secrets.SMTP_USER }}
+          ================================================
+          EOFname: Chaine CI-CD
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  # Configuration K3s
+  K8S_FRONTEND_PATH: ./k8s
+  NODE_PORT: 30080
+  CANARY_PORT: 30083
+  
+  # Configuration Docker
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/front_end
+  CONTAINER_NAME: frontend-prod
+  PORT: 80
+  DOCKER_BUILDKIT: 1
+  
+  # Configuration SonarQube
+  SONARQUBE_CONTAINER_NAME: sonarqube
+  SONARQUBE_PORT: 9000
+  SONARQUBE_VERSION: 10.4.1-community
+  
+  # Configuration Portainer
+  PORTAINER_USER: admin
+  PORTAINER_PASS: ${{ secrets.PORTAINER_PASSWORD }}
+  PORTAINER_PORT: 19000
+  PORTAINER_HTTPS_PORT: 19443
+
+  # Configuration Monitoring
+  GRAFANA_PORT: 30091
+  PROMETHEUS_PORT: 30090
+  ALERTMANAGER_PORT: 30092
+  GRAFANA_ADMIN_USER: ${{ secrets.GRAFANA_ADMIN_USER }}
+  GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+
+  # Alertmanager
+  SMTP_USER: ${{ secrets.SMTP_USER }}
+  SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+
+jobs:
+  build-app:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: 🛎 Checkout du code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: ⎔ Configurer Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: 📦 Installer les dépendances
+        run: |
+          npm ci --prefer-offline
+          npm install -D @vitest/coverage-v8
+
+      - name: 🛠️ Builder l'application
+        run: |
+          npm run build
+          npm test -- --coverage --coverage.provider=v8 --coverage.reporter=lcov
+          echo "=== Vérification des rapports de couverture ==="
+          ls -la coverage/
+          [ -f "coverage/lcov.info" ] || exit 1
+          echo "=== Build généré ==="
+          ls -lh dist/
+
+      - name: 📦 Sauvegarder les artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            coverage/
+          retention-days: 1
+
+  unit-tests:
+    needs: build-app
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: 🛎 Checkout du code
+        uses: actions/checkout@v3
+
+      - name: ⎔ Configurer Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: 📦 Installer les dépendances
+        run: npm ci --prefer-offline
+
+      - name: 🧪 Exécuter les tests unitaires
+        run: npm test
+        env:
+          CI: true
+          NODE_ENV: test
+
+  sonarqube-analysis:
+    needs: unit-tests
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: 🛎️ Checkout du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔍 Vérifier si SonarQube est déjà en cours d'exécution
+        id: check-sonarqube
+        run: |
+          if docker ps -q --filter "name=${{ env.SONARQUBE_CONTAINER_NAME }}"; then
+            echo "sonarqube_running=true" >> $GITHUB_OUTPUT
+            echo "🔄 SonarQube est déjà en cours d'exécution"
+          else
+            echo "sonarqube_running=false" >> $GITHUB_OUTPUT
+            echo "⚠️ SonarQube n'est pas démarré, démarrage..."
+            docker run -d \
+              --name ${{ env.SONARQUBE_CONTAINER_NAME }} \
+              -p ${{ env.SONARQUBE_PORT }}:9000 \
+              -v sonarqube_data:/opt/sonarqube/data \
+              -v sonarqube_extensions:/opt/sonarqube/extensions \
+              -v sonarqube_logs:/opt/sonarqube/logs \
+              -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+              sonarqube:${{ env.SONARQUBE_VERSION }}
+          fi
+
+      - name: ⏳ Attendre que SonarQube soit prêt
+        run: |
+          for i in {1..30}; do
+            if curl -sSf "${{ secrets.SONAR_HOST_URL }}/api/system/status" | grep -q '"status":"UP"'; then
+              echo "✅ SonarQube est opérationnel"
+              exit 0
+            fi
+            sleep 5
+            echo "⌛ Tentative $i/30 - En attente..."
+          done
+          echo "❌ SonarQube n'a pas démarré dans le délai imparti"
+          exit 1
+
+      - name: 🔍 Exécuter l'analyse SonarQube
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=Frontend_project
+            -Dsonar.projectName="Frontend_project"
+            -Dsonar.sources=src
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.js
+            -Dsonar.sourceEncoding=UTF-8
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+
+      - name: 📌 Afficher les résultats
+        run: |
+          echo "=========================================="
+          echo "🔍 Analyse SonarQube terminée avec succès !"
+          echo "🌐 Accès : ${{ secrets.SONAR_HOST_URL }}/dashboard?id=Frontend_project"
+          echo "=========================================="
+
+  build-and-push:
+    needs: sonarqube-analysis
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: 🔑 Authentification Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+
+      - name: 📥 Récupérer l'artefact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: dist/
+
+      - name: 🐳 Build et Push Docker
+        run: |
+          docker build \
+            -t $DOCKER_IMAGE:latest \
+            -t $DOCKER_IMAGE:$GITHUB_SHA \
+            .
+          
+          docker push $DOCKER_IMAGE:latest
+          docker push $DOCKER_IMAGE:$GITHUB_SHA
+
+  deploy-docker:
+    needs: build-and-push
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: 🔑 Authentification Docker
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+
+      - name: 🧹 Nettoyage
+        run: |
+          docker stop $CONTAINER_NAME || true
+          docker rm -f $CONTAINER_NAME || true
+
+      - name: 🚀 Déploiement
+        run: |
+          docker pull $DOCKER_IMAGE:latest
+          docker run -d \
+            --name $CONTAINER_NAME \
+            -p $PORT:80 \
+            --restart unless-stopped \
+            -e NODE_ENV=production \
+            $DOCKER_IMAGE:latest
+
+      - name: ✅ Vérification
+        run: |
+          sleep 15
+          curl -sSf http://localhost:$PORT/ || exit 1
+          echo "Déploiement Docker réussi!"
+
+  deploy-k3s:
+    needs: deploy-docker
+    runs-on: self-hosted
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl get nodes
+
+      - name: Verify cluster access
+        run: kubectl cluster-info
+
+      - name: 🚀 Déploiement K8s (Production)
+        run: |
+          kubectl apply -f $K8S_FRONTEND_PATH/namespace.yaml
+          
+          export DOCKER_IMAGE=$DOCKER_IMAGE
+          export TAG=$GITHUB_SHA
+          
+          envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/deployment.yaml | kubectl apply -f -
+          kubectl apply -f $K8S_FRONTEND_PATH/service.yaml
+
+      - name: 🚀 Déploiement Canary
+        run: |
+          export DOCKER_IMAGE=$DOCKER_IMAGE
+          export TAG=$GITHUB_SHA
+          envsubst '${DOCKER_IMAGE} ${TAG}' < $K8S_FRONTEND_PATH/canary-strategy-complete.yaml | kubectl apply -f -
+
+      - name: 🔍 Vérification déploiement
+        id: verify-deployment
+        run: |
+          if kubectl wait --for=condition=available deployment/frontend-deployment -n frontend --timeout=300s; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            kubectl get pods,svc -n frontend -o wide
+            echo "Application Production disponible sur: http://$(hostname -I | awk '{print $1}'):$NODE_PORT"
+            echo "Application Canary disponible sur: http://$(hostname -I | awk '{print $1}'):$CANARY_PORT"
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "::error::Échec de la vérification du déploiement"
+          fi
+
+      - name: 🔄 Rollback si échec
+        if: steps.verify-deployment.outputs.status == 'failure'
+        run: |
+          echo "::error::Lancement du rollback à la révision ${{ env.CURRENT_REVISION }}"
+          kubectl rollout undo deployment/frontend-deployment -n frontend --to-revision=${{ env.CURRENT_REVISION }}
+          kubectl delete -f $K8S_FRONTEND_PATH/canary-strategy-complete.yaml --ignore-not-found
+          
+          echo "Vérification du rollback..."
+          kubectl rollout status deployment/frontend-deployment -n frontend --timeout=180s
+          
+          echo "État après rollback:"
+          kubectl get pods -n frontend
+          exit 1
+
+      - name: 🕵️ Vérification Canary
+        if: steps.verify-deployment.outputs.status == 'success'
+        run: |
+          echo "=== Vérification du déploiement Canary ==="
+          kubectl wait --for=condition=available deployment/frontend-canary -n frontend --timeout=120s
+          
+          echo "=== Test d'accès Canary ==="
+          CANARY_URL="http://$(hostname -I | awk '{print $1}'):$CANARY_PORT"
+          if curl -sSf $CANARY_URL >/dev/null; then
+            echo "Canary est accessible avec succès: $CANARY_URL"
+          else
+            echo "::error::Échec d'accès au Canary"
+            exit 1
+          fi
+
+      - name: 🐳 Déploiement Portainer
+        if: steps.verify-deployment.outputs.status == 'success'
+        run: |
+          docker stop portainer || true
+          docker rm -f portainer || true
+          
+          docker run -d \
+            --name portainer \
+            -p $PORTAINER_PORT:9000 \
+            -p $PORTAINER_HTTPS_PORT:9443 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v portainer_data:/data \
+            --restart unless-stopped \
+            portainer/portainer-ce:latest
+          
+          sleep 30
+          
+          if ! curl -sSf http://localhost:$PORTAINER_PORT/api/users/admin/check >/dev/null; then
+            curl -X POST "http://localhost:$PORTAINER_PORT/api/users/admin/init" \
+              -H "Content-Type: application/json" \
+              -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}'
+          fi
+          
+          AUTH_TOKEN=$(curl -s -X POST "http://localhost:$PORTAINER_PORT/api/auth" \
+            -d '{"Username": "'"$PORTAINER_USER"'", "Password": "'"$PORTAINER_PASS"'"}' \
+            | jq -r '.jwt')
+          
+          K3S_IP=$(hostname -I | awk '{print $1}')
+          K3S_ENDPOINT="https://$K3S_IP:6443"
+          
+          K3S_CONFIG=$(sudo cat /etc/rancher/k3s/k3s.yaml | \
+            sed "s/127.0.0.1/$K3S_IP/g" | \
+            sed "s/default/portainer-k3s/g" | \
+            base64 -w0)
+          
+          curl -X POST "http://localhost:$PORTAINER_PORT/api/endpoints" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -d '{
+              "Name": "K3s Cluster",
+              "URL": "'"$K3S_ENDPOINT"'",
+              "TLS": true,
+              "TLSSkipVerify": true,
+              "Type": 3,
+              "KubernetesConfig": {
+                "Configuration": "'"$K3S_CONFIG"'",
+                "UseLoadBalancer": false
+              }
+            }'
+            
+          echo "Portainer configuré avec accès à K3s: http://$K3S_IP:$PORTAINER_PORT"
+
+  cluster-monitoring:
+    needs: deploy-k3s
+    runs-on: self-hosted
+    timeout-minutes: 30
+    env:
+      ALERTMANAGER_PORT: 30092
+      PROMETHEUS_PORT: 30090
+      GRAFANA_PORT: 30091
+
+    steps:
+      - name: 🔧 Configurer kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl cluster-info
+
+      - name: 📥 Télécharger les fichiers de configuration
+        uses: actions/checkout@v4
+        with:
+          path: '.'
+
+      - name: 🛠️ Vérifier l'existence des fichiers
+        run: |
+          echo "=== Contenu du dossier monitoring-config ==="
+          ls -la monitoring-config/
+          ls -la monitoring-config/alertmanager/
+          ls -la monitoring-config/Prometheus/
+          [ -f "monitoring-config/alertmanager/alertmanager-config.yml" ] || { echo "::error::Fichier alertmanager-config.yml manquant"; exit 1; }
+          [ -f "monitoring-config/alertmanager/alertmanager-deployment.yml" ] || { echo "::error::Fichier alertmanager-deployment.yml manquant"; exit 1; }
+          [ -f "monitoring-config/Prometheus/alert-rules.yml" ] || { echo "::error::Fichier alert-rules.yml manquant"; exit 1; }
+
+      - name: 🛠️ Déployer AlertManager
+        run: |
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Appliquer la configuration AlertManager
+          kubectl -n monitoring create secret generic alertmanager-config \
+            --from-file=alertmanager.yml=monitoring-config/alertmanager/alertmanager-config.yml \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Déployer AlertManager
+          kubectl apply -f monitoring-config/alertmanager/alertmanager-deployment.yml
+
+      - name: ⎈ Installer Prometheus+Grafana avec Helm
+        timeout-minutes: 15
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --set grafana.adminUser="${{ secrets.GRAFANA_ADMIN_USER }}" \
+            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --set prometheus.service.type=NodePort \
+            --set prometheus.service.nodePort=$PROMETHEUS_PORT \
+            --set grafana.service.type=NodePort \
+            --set grafana.service.nodePort=$GRAFANA_PORT \
+            --set alertmanager.enabled=false \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].apiVersion="v2" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].scheme="http" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].staticConfigs[0].targets[0]="alertmanager.monitoring.svc:9093" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].pathPrefix="/" \
+            --set prometheus.prometheusSpec.alerting.alertmanagers[0].timeout="10s" \
+            --set prometheus.prometheusSpec.alertmanagerConfigSelector.matchLabels.release="monitoring" \
+            --set prometheus.prometheusSpec.alertmanagerConfigNamespaceSelector.matchLabels.name="monitoring" \
+            --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false \
+            --set prometheus.prometheusSpec.ruleSelector.matchLabels.release="monitoring" \
+            --set prometheus.prometheusSpec.ruleSelector.matchLabels.app="kube-prometheus-stack" \
+            --set prometheus.prometheusSpec.ruleNamespaceSelector.matchLabels.name="monitoring" \
+            --set prometheusOperator.prometheusConfigReloader.enabled=true \
+            --wait
+
+      - name: ⏳ Attendre que Prometheus soit prêt
+        run: |
+          for i in {1..30}; do
+            if kubectl -n monitoring get pods -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.phase}' | grep -q "Running"; then
+              echo "✅ Prometheus est en cours d'exécution"
+              sleep 30
+              exit 0
+            fi
+            sleep 10
+            echo "⌛ Tentative $i/30 - En attente du démarrage de Prometheus..."
+          done
+          echo "❌ Prometheus n'a pas démarré après 5 minutes"
+          exit 1
+
+      - name: 🚨 Déployer les règles d'alerte
+        run: |
+          kubectl apply -f monitoring-config/Prometheus/alert-rules.yml
           sleep 15
 
       - name: 🔄 Vérifier les règles d'alerte
