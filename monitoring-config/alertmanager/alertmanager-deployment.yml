@@ -6,7 +6,12 @@ metadata:
 type: Opaque
 stringData:
   alertmanager.yml: |
-    {{ .Files.Get "alertmanager/alertmanager-config.yml" | indent 4 }}
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: 'null'
+    receivers:
+    - name: 'null'
 
 ---
 apiVersion: apps/v1
@@ -30,14 +35,11 @@ spec:
         args:
         - '--config.file=/etc/alertmanager/alertmanager.yml'
         - '--storage.path=/alertmanager'
-        - '--cluster.peer-timeout=30s'
         ports:
         - containerPort: 9093
         volumeMounts:
         - name: config
           mountPath: /etc/alertmanager
-        - name: storage
-          mountPath: /alertmanager
         resources:
           requests:
             cpu: "100m"
@@ -45,28 +47,10 @@ spec:
           limits:
             cpu: "500m"
             memory: "512Mi"
-        readinessProbe:
-          httpGet:
-            path: /-/ready
-            port: 9093
-          initialDelaySeconds: 30
-          periodSeconds: 5
-          timeoutSeconds: 5
-          failureThreshold: 3
-        livenessProbe:
-          httpGet:
-            path: /-/healthy
-            port: 9093
-          initialDelaySeconds: 30
-          periodSeconds: 5
-          timeoutSeconds: 5
-          failureThreshold: 3
       volumes:
       - name: config
         secret:
           secretName: alertmanager-config
-      - name: storage
-        emptyDir: {}
 
 ---
 apiVersion: v1

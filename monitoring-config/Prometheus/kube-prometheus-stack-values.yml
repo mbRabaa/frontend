@@ -1,7 +1,10 @@
 alertmanager:
-  enabled: false
+  enabled: false  # Désactivé car déployé séparément
 
 prometheus:
+  service:
+    type: NodePort
+    nodePort: 30090  # Port pour l'UI Prometheus
   prometheusSpec:
     ruleSelectorNilUsesHelmValues: false
     ruleSelector:
@@ -12,12 +15,8 @@ prometheus:
       matchLabels:
         name: monitoring
     alertmanagers:
-    - namespace: monitoring
-      name: alertmanager
-      port: web
-    additionalAlertManagerConfigs:
     - static_configs:
-      - targets: ['alertmanager.monitoring.svc:9093']
+      - targets: ['alertmanager.monitoring.svc:9093']  # Cible le Service ClusterIP
       scheme: http
       pathPrefix: /
       timeout: 10s
@@ -27,7 +26,7 @@ grafana:
   adminPassword: "${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
   service:
     type: NodePort
-    nodePort: 30091
+    nodePort: 30091  # Port pour l'UI Grafana
 
 prometheus-node-exporter:
-  hostRootFsMount: false
+  hostRootFsMount: false  # Sécurité : empêche l'accès au système de fichiers hôte
