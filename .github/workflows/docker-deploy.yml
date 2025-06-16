@@ -1,4 +1,4 @@
-name: chaine CI-CD complet
+name: chaine CI-CD 
 
 on:
   push:
