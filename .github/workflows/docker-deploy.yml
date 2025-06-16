@@ -1,4 +1,4 @@
-name: chaine CI-CD 
+name:  CI-CD 
 
 on:
   push:
@@ -381,7 +381,7 @@ jobs:
           [ -f "monitoring-config/Prometheus/alert-rules.yml" ] || { echo "::error::Fichier alert-rules.yml manquant"; exit 1; }
 
       - name: 🛠️ Déployer AlertManager
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           # Appliquer la configuration
           kubectl apply -f monitoring-config/alertmanager/alertmanager-deployment.yml
