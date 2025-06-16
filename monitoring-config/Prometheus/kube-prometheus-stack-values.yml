@@ -1,16 +1,33 @@
 alertmanager:
-  enabled: false  
+  enabled: false
 
 prometheus:
   prometheusSpec:
     ruleSelectorNilUsesHelmValues: false
-    ruleSelector: {}
-    ruleNamespaceSelector: {}
+    ruleSelector:
+      matchLabels:
+        release: monitoring
+        app: kube-prometheus-stack
+    ruleNamespaceSelector:
+      matchLabels:
+        name: monitoring
     alertmanagers:
     - namespace: monitoring
       name: alertmanager
       port: web
+    additionalAlertManagerConfigs:
+    - static_configs:
+      - targets: ['alertmanager.monitoring.svc:9093']
+      scheme: http
+      pathPrefix: /
+      timeout: 10s
 
 grafana:
   adminUser: "${{ secrets.GRAFANA_ADMIN_USER }}"
   adminPassword: "${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
+  service:
+    type: NodePort
+    nodePort: 30091
+
+prometheus-node-exporter:
+  hostRootFsMount: false

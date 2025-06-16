@@ -30,11 +30,14 @@ spec:
         args:
         - '--config.file=/etc/alertmanager/alertmanager.yml'
         - '--storage.path=/alertmanager'
+        - '--cluster.peer-timeout=30s'
         ports:
         - containerPort: 9093
         volumeMounts:
         - name: config
           mountPath: /etc/alertmanager
+        - name: storage
+          mountPath: /alertmanager
         resources:
           requests:
             cpu: "100m"
@@ -62,6 +65,8 @@ spec:
       - name: config
         secret:
           secretName: alertmanager-config
+      - name: storage
+        emptyDir: {}
 
 ---
 apiVersion: v1
