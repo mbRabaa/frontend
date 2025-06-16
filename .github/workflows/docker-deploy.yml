@@ -1,4 +1,4 @@
-name: Chaine complete
+name: Chaine CI-CD
 on:
   push:
     branches:
@@ -6,7 +6,6 @@ on:
 
 env:
   # Configuration K3s
-  K3S_VERSION: v1.26.5+k3s1
   K8S_FRONTEND_PATH: ./k8s
   NODE_PORT: 30080
   CANARY_PORT: 30083
