@@ -1,19 +1,67 @@
-global:
-  smtp_from: "${{ secrets.SMTP_USER }}"
-  smtp_smarthost: smtp.gmail.com:587
-  smtp_auth_username: "${{ secrets.SMTP_USER }}"
-  smtp_auth_password: "${{ secrets.SMTP_PASSWORD }}"
-  smtp_require_tls: true
-
-route:
-  group_by: ['alertname']
-  group_wait: 30s
-  group_interval: 5m
-  repeat_interval: 3h
-  receiver: 'email-notifications'
-
-receivers:
-- name: 'email-notifications'
-  email_configs:
-  - to: "${{ secrets.ALERT_EMAIL }}"
-    send_resolved: true
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: alertmanager
+        image: quay.io/prometheus/alertmanager:v0.25.0
+        args:
+        - '--config.file=/etc/alertmanager/alertmanager.yml'
+        - '--storage.path=/alertmanager'
+        - '--cluster.peer-timeout=30s'
+        ports:
+        - containerPort: 9093
+        volumeMounts:
+        - name: config
+          mountPath: /etc/alertmanager
+        - name: storage
+          mountPath: /alertmanager
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9093
+          initialDelaySeconds: 45
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9093
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9093
+          failureThreshold: 30
+          periodSeconds: 10
+      volumes:
+      - name: config
+        secret:
+          secretName: alertmanager-config
+      - name: storage
+        emptyDir: {}
