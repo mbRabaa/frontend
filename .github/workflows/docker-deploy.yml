@@ -380,21 +380,22 @@ jobs:
           [ -f "monitoring-config/alertmanager/alertmanager-deployment.yml" ] || { echo "::error::Fichier alertmanager-deployment.yml manquant"; exit 1; }
           [ -f "monitoring-config/Prometheus/alert-rules.yml" ] || { echo "::error::Fichier alert-rules.yml manquant"; exit 1; }
 
-      - name: 🛠️ Déployer AlertManager
+      - name: 🛠️ Déployer AlertManager (avec relances)
         timeout-minutes: 10
         run: |
-          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-          
-          # Appliquer la configuration AlertManager
-          kubectl -n monitoring create secret generic alertmanager-config \
-            --from-file=alertmanager.yml=monitoring-config/alertmanager/alertmanager-config.yml \
-            --dry-run=client -o yaml | kubectl apply -f -
-          
-          # Déployer AlertManager
           kubectl apply -f monitoring-config/alertmanager/alertmanager-deployment.yml
           
-          # Vérifier que AlertManager est prêt
-          kubectl -n monitoring wait --for=condition=ready pod -l app=alertmanager --timeout=120s
+          for i in {1..3}; do
+            if kubectl -n monitoring wait --for=condition=ready pod -l app=alertmanager --timeout=180s; then
+              exit 0
+            fi
+            echo "::warning::Tentative $i/3 échouée, redémarrage..."
+            kubectl -n monitoring rollout restart deployment alertmanager
+            sleep 15
+          done
+          
+          echo "::error::Échec après 3 tentatives"
+          exit 1
 
       - name: ⎈ Installer Prometheus+Grafana avec Helm
         timeout-minutes: 15
