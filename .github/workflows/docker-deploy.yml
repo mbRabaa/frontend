@@ -77,7 +77,7 @@ jobs:
           exit 1
 
       - name: ⎈ Installer Prometheus+Grafana avec Helm
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
           # Nettoyer les opérations Helm bloquées si nécessaire
           helm ls -n monitoring
