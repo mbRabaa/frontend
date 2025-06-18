@@ -19,10 +19,10 @@ spec:
         summary: "High memory usage on {{ $labels.instance }}"
         description: "Memory available is less than 10% on {{ $labels.instance }}"
     - alert: HighCPUUsage
-      expr: (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 90
+      expr: (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 70  # Modifié de 90 à 70
       for: 10m
       labels:
         severity: warning
       annotations:
         summary: "High CPU usage on {{ $labels.instance }}"
-        description: "CPU usage is over 90% for 10 minutes on {{ $labels.instance }}"
+        description: "CPU usage is over 70% for 10 minutes on {{ $labels.instance }}"  # Modifié la description
