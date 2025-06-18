@@ -1,4 +1,4 @@
-name:  monitoring d'infrastructure
+name:  alertmanager
 
 on:
   push:
