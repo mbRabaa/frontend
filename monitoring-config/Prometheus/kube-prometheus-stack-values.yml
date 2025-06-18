@@ -29,4 +29,4 @@ grafana:
     nodePort: 30091  # Port pour l'UI Grafana
 
 prometheus-node-exporter:
-  hostRootFsMount: false  # Sécurité : empêche l'accès au système de fichiers hôte
+  hostRootFsMount: false 

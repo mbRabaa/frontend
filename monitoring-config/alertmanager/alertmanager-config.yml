@@ -1,6 +1,6 @@
 global:
   resolve_timeout: 5m
-  smtp_from: '{{ secrets.SMTP_FROM }}'
+  smtp_from: '${{ secrets.SMTP_FROM }}' 
   smtp_smarthost: 'smtp.gmail.com:587'
   smtp_auth_username: '${{ secrets.SMTP_USER }}'
   smtp_auth_password: '${{ secrets.SMTP_PASSWORD }}'
