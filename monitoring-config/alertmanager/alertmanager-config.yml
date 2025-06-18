@@ -1,7 +1,7 @@
 global:
   resolve_timeout: 5m
-  smtp_from: 'alertmanager@example.com'
-  smtp_smarthost: 'smtp.example.com:587'
+  smtp_from: '{{ secrets.SMTP_FROM }}'
+  smtp_smarthost: 'smtp.gmail.com:587'
   smtp_auth_username: '${{ secrets.SMTP_USER }}'
   smtp_auth_password: '${{ secrets.SMTP_PASSWORD }}'
   smtp_require_tls: true
